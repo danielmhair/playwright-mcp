@@ -176,8 +176,9 @@ Playwright MCP server supports following arguments. They can be provided in the 
                                "http://myproxy:3128" or "socks5://myproxy:8080"
   --save-session               Whether to save the Playwright MCP session into
                                the output directory.
-  --save-trace                 Whether to save the Playwright Trace of the
-                               session into the output directory.
+  --save-trace                 Save a trace.zip with screenshots, page sources
+                               and manual user actions performed during the
+                               session.
   --storage-state <path>       path to the storage state file for isolated
                                sessions.
   --user-agent <ua string>     specify user agent string

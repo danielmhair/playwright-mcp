@@ -16,6 +16,7 @@
 
 import debug from 'debug';
 import * as playwright from 'playwright';
+import path from 'path';
 
 import { logUnhandledError } from './log.js';
 import { Tab } from './tab.js';
@@ -166,8 +167,12 @@ export class Context {
     this._browserContextPromise = undefined;
 
     await promise.then(async ({ browserContext, close }) => {
-      if (this.config.saveTrace)
+      if (this.config.saveTrace) {
+        const tracePath = path.join(this.config.browser.launchOptions.tracesDir!, 'trace.zip');
+        await browserContext.tracing.stop({ path: tracePath });
+      } else {
         await browserContext.tracing.stop();
+      }
       await close();
     });
   }
@@ -216,9 +221,9 @@ export class Context {
     if (this.config.saveTrace) {
       await browserContext.tracing.start({
         name: 'trace',
-        screenshots: false,
+        screenshots: true,
         snapshots: true,
-        sources: false,
+        sources: true,
       });
     }
     return result;
@@ -254,6 +259,7 @@ export class InputRecorder {
           return;
         const tab = Tab.forPage(page);
         this._actions.push({ ...data, tab, code: code.trim(), timestamp: performance.now() });
+        void this._recordTraceStep(code.trim());
         this._scheduleFlush();
       },
       actionUpdated: (page: playwright.Page, data: actions.ActionInContext, code: string) => {
@@ -261,6 +267,7 @@ export class InputRecorder {
           return;
         const tab = Tab.forPage(page);
         this._actions[this._actions.length - 1] = { ...data, tab, code: code.trim(), timestamp: performance.now() };
+        void this._recordTraceStep(code.trim());
         this._scheduleFlush();
       },
       signalAdded: (page: playwright.Page, data: actions.SignalInContext) => {
@@ -280,6 +287,7 @@ export class InputRecorder {
           code: `await page.goto('${data.signal.url}');`,
           timestamp: performance.now(),
         });
+        void this._recordTraceStep(`await page.goto('${data.signal.url}');`);
         this._scheduleFlush();
       },
     });
@@ -308,5 +316,14 @@ export class InputRecorder {
     const actions = this._actions;
     this._actions = [];
     await this._sessionLog.logActions(actions);
+  }
+
+  private async _recordTraceStep(title: string) {
+    try {
+      await this._browserContext.tracing.group(title, { location: { file: 'user-action' } });
+      await this._browserContext.tracing.groupEnd();
+    } catch {
+      // Ignore tracing errors.
+    }
   }
 }
