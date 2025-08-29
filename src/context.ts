@@ -310,7 +310,8 @@ export class InputRecorder {
           return;
         const tab = Tab.forPage(page);
         this._actions.push({ ...data, tab, code: code.trim(), timestamp: performance.now() });
-        void this._recordTraceStep(data.action.name || code.trim(), page);
+        // Only record to trace, don't interfere with user actions
+        void this._recordTraceStep(data.action.name || code.trim(), page, data);
         this._scheduleFlush();
       },
       actionUpdated: (page: playwright.Page, data: actions.ActionInContext, code: string) => {
@@ -318,7 +319,8 @@ export class InputRecorder {
           return;
         const tab = Tab.forPage(page);
         this._actions[this._actions.length - 1] = { ...data, tab, code: code.trim(), timestamp: performance.now() };
-        void this._recordTraceStep(data.action.name || code.trim(), page);
+        // Only record to trace, don't interfere with user actions
+        void this._recordTraceStep(data.action.name || code.trim(), page, data);
         this._scheduleFlush();
       },
       signalAdded: (page: playwright.Page, data: actions.SignalInContext) => {
@@ -338,7 +340,7 @@ export class InputRecorder {
           code: `await page.goto('${data.signal.url}');`,
           timestamp: performance.now(),
         });
-        void this._recordTraceStep(`await page.goto('${data.signal.url}');`, page);
+        void this._recordTraceStep(`await page.goto('${data.signal.url}');`, page, data);
         this._scheduleFlush();
       },
     });
@@ -369,27 +371,50 @@ export class InputRecorder {
     await this._sessionLog.logActions(actions);
   }
 
-  private async _recordTraceStep(title: string, page?: playwright.Page) {
+  private async _recordTraceStep(title: string, page?: playwright.Page, actionData?: any) {
+    // PASSIVE APPROACH: Directly inject trace events without interfering with user actions
     try {
-      // Create a trace entry by evaluating a simple function on the page
-      // This ensures the action appears as an individual entry in the trace timeline
-      if (page) {
-        // Use page.evaluate to create a traceable action
-        await page.evaluate((actionTitle: string) => {
-          // Add a comment to the console to mark this action
-          console.log(`[USER ACTION] ${actionTitle}`);
-          // Return the action title for tracing
-          return actionTitle;
-        }, title);
-      } else {
-        // Fallback to group approach if no page available
-        await this._browserContext.tracing.group(title, {
+      if (page && actionData) {
+        const context = page.context() as any;
+
+        // Try to directly append to the trace using Playwright's internal APIs
+        if (context._tracing && context._tracing._appendTraceEvent) {
+          const traceEvent = {
+            type: 'action',
+            callId: `user-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            startTime: actionData.startTime || Date.now(),
+            endTime: actionData.endTime || Date.now(),
+            method: actionData.action?.name || 'user_action',
+            params: actionData.action || { action: title },
+            result: { success: true },
+            metadata: {
+              method: actionData.action?.name || 'user_action',
+              params: actionData.action || { action: title },
+              location: { 
+                file: 'user-interaction', 
+                line: 1, 
+                column: 1 
+              }
+            }
+          };
+          
+          // Directly append the event to the trace
+          context._tracing._appendTraceEvent(traceEvent);
+          return;
+        }
+      }
+      
+      // Fallback: Use context tracing if available
+      const context = this._browserContext as any;
+      if (context._tracing) {
+        // Create a minimal trace entry using available APIs
+        await context.tracing.group(title, {
           location: { file: 'user-action' }
         });
-        await this._browserContext.tracing.groupEnd();
+        await context.tracing.groupEnd();
       }
     } catch {
-      // Ignore tracing errors as they're not critical for functionality
+      // All trace recording is best-effort - don't fail if it doesn't work
     }
   }
 }
