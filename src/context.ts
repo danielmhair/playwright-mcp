@@ -310,7 +310,7 @@ export class InputRecorder {
           return;
         const tab = Tab.forPage(page);
         this._actions.push({ ...data, tab, code: code.trim(), timestamp: performance.now() });
-        void this._recordTraceStep(code.trim());
+        void this._recordTraceStep(data.action.name || code.trim(), page);
         this._scheduleFlush();
       },
       actionUpdated: (page: playwright.Page, data: actions.ActionInContext, code: string) => {
@@ -318,7 +318,7 @@ export class InputRecorder {
           return;
         const tab = Tab.forPage(page);
         this._actions[this._actions.length - 1] = { ...data, tab, code: code.trim(), timestamp: performance.now() };
-        void this._recordTraceStep(code.trim());
+        void this._recordTraceStep(data.action.name || code.trim(), page);
         this._scheduleFlush();
       },
       signalAdded: (page: playwright.Page, data: actions.SignalInContext) => {
@@ -338,7 +338,7 @@ export class InputRecorder {
           code: `await page.goto('${data.signal.url}');`,
           timestamp: performance.now(),
         });
-        void this._recordTraceStep(`await page.goto('${data.signal.url}');`);
+        void this._recordTraceStep(`await page.goto('${data.signal.url}');`, page);
         this._scheduleFlush();
       },
     });
@@ -369,12 +369,27 @@ export class InputRecorder {
     await this._sessionLog.logActions(actions);
   }
 
-  private async _recordTraceStep(title: string) {
+  private async _recordTraceStep(title: string, page?: playwright.Page) {
     try {
-      await this._browserContext.tracing.group(title, { location: { file: 'user-action' } });
-      await this._browserContext.tracing.groupEnd();
+      // Create a trace entry by evaluating a simple function on the page
+      // This ensures the action appears as an individual entry in the trace timeline
+      if (page) {
+        // Use page.evaluate to create a traceable action
+        await page.evaluate((actionTitle: string) => {
+          // Add a comment to the console to mark this action
+          console.log(`[USER ACTION] ${actionTitle}`);
+          // Return the action title for tracing
+          return actionTitle;
+        }, title);
+      } else {
+        // Fallback to group approach if no page available
+        await this._browserContext.tracing.group(title, {
+          location: { file: 'user-action' }
+        });
+        await this._browserContext.tracing.groupEnd();
+      }
     } catch {
-      // Ignore tracing errors.
+      // Ignore tracing errors as they're not critical for functionality
     }
   }
 }
