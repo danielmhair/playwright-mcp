@@ -43,6 +43,7 @@ export class Context {
   private _closeBrowserContextPromise: Promise<void> | undefined;
   private _inputRecorder: InputRecorder | undefined;
   private _sessionLog: SessionLog | undefined;
+  private _userSessionActive: boolean = false;
 
   constructor(tools: Tool[], config: FullConfig, browserContextFactory: BrowserContextFactory, sessionLog: SessionLog | undefined) {
     this.tools = tools;
@@ -157,6 +158,55 @@ export class Context {
     await this._inputRecorder?.setEnabled(enabled);
   }
 
+  setUserSessionActive(active: boolean) {
+    this._userSessionActive = active;
+  }
+
+  isUserSessionActive(): boolean {
+    return this._userSessionActive;
+  }
+
+  async flushInputRecorder(): Promise<void> {
+    if (this._inputRecorder) {
+      await (this._inputRecorder as any)._flush();
+    }
+  }
+
+  async _getBrowserContextForTracing(): Promise<playwright.BrowserContext | undefined> {
+    if (!this._browserContextPromise) {
+      return undefined;
+    }
+    const { browserContext } = await this._browserContextPromise;
+    return browserContext;
+  }
+
+  async createUserSessionTrace(filename: string = `user-session-${Date.now()}`): Promise<string | undefined> {
+    if (!this.config.browser.launchOptions.tracesDir) {
+      return undefined;
+    }
+
+    const { browserContext } = await this._ensureBrowserContext();
+    const tracePath = path.join(this.config.browser.launchOptions.tracesDir, `${filename}.zip`);
+    
+    try {
+      await browserContext.tracing.stop({ path: tracePath });
+      
+      // Restart tracing if needed for continuous operation
+      if (this.config.saveTrace || this.config.saveTraceWithUserActions) {
+        await browserContext.tracing.start({
+          name: 'trace',
+          screenshots: true,
+          snapshots: true,
+          sources: true,
+        });
+      }
+      
+      return tracePath;
+    } catch (error) {
+      throw new Error(`Failed to create trace file: ${error}`);
+    }
+  }
+
   private async _closeBrowserContextImpl() {
     if (!this._browserContextPromise)
       return;
@@ -167,8 +217,9 @@ export class Context {
     this._browserContextPromise = undefined;
 
     await promise.then(async ({ browserContext, close }) => {
-      if (this.config.saveTrace) {
-        const tracePath = path.join(this.config.browser.launchOptions.tracesDir!, 'trace.zip');
+      if (this.config.saveTrace || this.config.saveTraceWithUserActions) {
+        const traceName = this.config.saveTraceWithUserActions ? 'user-session-trace' : 'trace';
+        const tracePath = path.join(this.config.browser.launchOptions.tracesDir!, `${traceName}.zip`);
         await browserContext.tracing.stop({ path: tracePath });
       } else {
         await browserContext.tracing.stop();
@@ -218,9 +269,9 @@ export class Context {
     for (const page of browserContext.pages())
       this._onPageCreated(page);
     browserContext.on('page', page => this._onPageCreated(page));
-    if (this.config.saveTrace) {
+    if (this.config.saveTrace || this.config.saveTraceWithUserActions) {
       await browserContext.tracing.start({
-        name: 'trace',
+        name: this.config.saveTraceWithUserActions ? 'user-session-trace' : 'trace',
         screenshots: true,
         snapshots: true,
         sources: true,

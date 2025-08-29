@@ -57,14 +57,27 @@ export class BrowserServerBackend implements ServerBackend {
     const context = this._context!;
     const response = new Response(context, schema.name, parsedArguments);
     const tool = this._tools.find(tool => tool.schema.name === schema.name)!;
-    await context.setInputRecorderEnabled(false);
+    
+    // Determine if we should disable InputRecorder during tool execution
+    const shouldDisableRecorder = !context.isUserSessionActive() && 
+                                 !this._config.saveTraceWithUserActions && 
+                                 !this._config.recordUserActions;
+    
+    if (shouldDisableRecorder) {
+      await context.setInputRecorderEnabled(false);
+    }
+
     try {
       await tool.handle(context, parsedArguments, response);
     } catch (error) {
       response.addError(String(error));
     } finally {
-      await context.setInputRecorderEnabled(true);
+      // Only re-enable if we disabled it, and if session logging or user action recording is enabled
+      if (shouldDisableRecorder && (this._sessionLog || this._config.recordUserActions)) {
+        await context.setInputRecorderEnabled(true);
+      }
     }
+    
     await this._sessionLog?.logResponse(response);
     return await response.serialize();
   }

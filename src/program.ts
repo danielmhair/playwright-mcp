@@ -51,6 +51,8 @@ program
     .option('--proxy-server <proxy>', 'specify proxy server, for example "http://myproxy:3128" or "socks5://myproxy:8080"')
     .option('--save-session', 'Whether to save the Playwright MCP session into the output directory.')
     .option('--save-trace', 'Whether to save the Playwright Trace of the session into the output directory.')
+    .option('--save-trace-with-user-actions', 'Save Playwright traces that include human user actions performed during browser sessions.')
+    .option('--record-user-actions', 'Record human user actions during browser sessions (without necessarily generating traces).')
     .option('--storage-state <path>', 'path to the storage state file for isolated sessions.')
     .option('--user-agent <ua string>', 'specify user agent string')
     .option('--user-data-dir <path>', 'path to the user data directory. If not specified, a temporary directory will be created.')
@@ -81,10 +83,11 @@ program
       const serverBackendFactory = () => new BrowserServerBackend(config, browserContextFactory);
       await mcpTransport.start(serverBackendFactory, config.server);
 
-      if (config.saveTrace) {
+      if (config.saveTrace || config.saveTraceWithUserActions) {
         const server = await startTraceViewerServer();
         const urlPrefix = server.urlPrefix('human-readable');
-        const url = urlPrefix + '/trace/index.html?trace=' + config.browser.launchOptions.tracesDir + '/trace.json';
+        const traceName = config.saveTraceWithUserActions ? 'user-session-trace' : 'trace';
+        const url = urlPrefix + '/trace/index.html?trace=' + config.browser.launchOptions.tracesDir + `/${traceName}.json`;
         // eslint-disable-next-line no-console
         console.error('\nTrace viewer listening on ' + url);
       }
