@@ -58,6 +58,14 @@ export const browserStartUserSession = defineTool({
     response.addResult('User session recording started. Browser is now ready for manual interaction.');
     response.addResult(`Current page: ${tab.page.url()}`);
     
+    // Check if browser is headless and warn user
+    if (context.config.browser.launchOptions.headless) {
+      response.addResult('⚠️  WARNING: Browser is running in headless mode. Human interactions cannot be performed.');
+      response.addResult('   To enable manual interaction, restart without --headless flag.');
+    } else {
+      response.addResult('✅ Browser is running in headed mode - you can now perform manual interactions.');
+    }
+    
     if (context.config.saveTraceWithUserActions || context.config.recordUserActions) {
       response.addResult('Human actions will be recorded and can be retrieved using browser_end_user_session.');
     }

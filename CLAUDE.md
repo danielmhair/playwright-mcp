@@ -168,11 +168,14 @@ export const toolName = defineTool({
 - `--record-user-actions`: Enable action recording without trace generation
 
 **Workflow**:
-1. Start MCP server with user action recording enabled
+1. Start MCP server with user action recording enabled (DO NOT use --headless!)
 2. Use `browser_start_user_session` to begin recording
-3. Perform manual interactions (clicking, typing, navigating)
-4. Use `browser_end_user_session` to get trace.zip file
+3. Perform manual interactions (clicking, typing, navigating) in the headed browser window
+4. Use `browser_end_user_session` to get trace.zip file (browser stays open for manual review)
 5. Trace contains both MCP tool actions and human interactions
+6. Manually close browser when done
+
+**Important**: Never use `--headless` with user session recording - humans need to see and interact with the browser!
 
 **Key Implementation Details**:
 - InputRecorder remains active during tool execution when user sessions are active
