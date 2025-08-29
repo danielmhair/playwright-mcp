@@ -56,6 +56,11 @@ export const browserStartUserSession = defineTool({
     }
     
     response.addResult('User session recording started. Browser is now ready for manual interaction.');
+    response.addResult('');
+    response.addResult('📊 DUAL RECORDING SYSTEM:');
+    response.addResult('   1. Playwright trace.zip → Screenshots, network, programmatic actions');
+    response.addResult('   2. Session .md log → Detailed human interaction timeline');
+    response.addResult('   3. Both files provide complete session information');
     response.addResult(`Current page: ${tab.page.url()}`);
     
     // Check if browser is headless and warn user
@@ -141,7 +146,13 @@ export const browserEndUserSession = defineTool({
       response.addResult('User session recording ended.');
       
       if (traceFile) {
-        response.addResult(`Trace file containing all interactions is attached and saved at: ${traceFile}`);
+        response.addResult(`📦 Playwright trace.zip: ${traceFile}`);
+        response.addResult('   - Contains: Screenshots, network logs, browser state');
+        response.addResult('   - View with: npx playwright show-trace <file>');
+        response.addResult('');
+        response.addResult('📝 Session .md log: Available in session log directory'); 
+        response.addResult('   - Contains: Detailed human interaction timeline');
+        response.addResult('   - Shows: Every click, type, scroll with timestamps');
       }
 
       // Close browser if requested

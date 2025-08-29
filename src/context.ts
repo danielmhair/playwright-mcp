@@ -372,49 +372,19 @@ export class InputRecorder {
   }
 
   private async _recordTraceStep(title: string, page?: playwright.Page, actionData?: any) {
-    // PASSIVE APPROACH: Directly inject trace events without interfering with user actions
-    try {
-      if (page && actionData) {
-        const context = page.context() as any;
-
-        // Try to directly append to the trace using Playwright's internal APIs
-        if (context._tracing && context._tracing._appendTraceEvent) {
-          const traceEvent = {
-            type: 'action',
-            callId: `user-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-            startTime: actionData.startTime || Date.now(),
-            endTime: actionData.endTime || Date.now(),
-            method: actionData.action?.name || 'user_action',
-            params: actionData.action || { action: title },
-            result: { success: true },
-            metadata: {
-              method: actionData.action?.name || 'user_action',
-              params: actionData.action || { action: title },
-              location: { 
-                file: 'user-interaction', 
-                line: 1, 
-                column: 1 
-              }
-            }
-          };
-          
-          // Directly append the event to the trace
-          context._tracing._appendTraceEvent(traceEvent);
-          return;
-        }
-      }
-      
-      // Fallback: Use context tracing if available
-      const context = this._browserContext as any;
-      if (context._tracing) {
-        // Create a minimal trace entry using available APIs
-        await context.tracing.group(title, {
-          location: { file: 'user-action' }
-        });
-        await context.tracing.groupEnd();
-      }
-    } catch {
-      // All trace recording is best-effort - don't fail if it doesn't work
-    }
+    // ARCHITECTURAL CONCLUSION: This approach is fundamentally wrong
+    // 
+    // Playwright traces are designed for PROGRAMMATIC actions (API calls)
+    // InputRecorder captures HUMAN actions (DOM events)  
+    // These are incompatible systems - forcing them together is brittle
+    //
+    // CORRECT SOLUTION: Dual output approach
+    // 1. Playwright trace.zip: Screenshots, network, programmatic actions
+    // 2. Session .md log: Detailed human interaction timeline
+    //
+    // User gets BOTH files with complete information
+    // No need to hack incompatible systems together
+    
+    // Removed all trace injection attempts - they were architecturally wrong
   }
 }
