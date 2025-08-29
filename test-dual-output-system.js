@@ -17,7 +17,7 @@ async function testDualOutputSystem() {
   
   const transport = new StdioClientTransport({
     command: 'node',
-    args: ['lib/program.js', '--save-trace-with-user-actions', '--record-user-actions', '--browser=chromium'],
+    args: ['cli.js', '--save-trace-with-user-actions', '--record-user-actions'],
     cwd: process.cwd(),
   });
 
@@ -50,21 +50,36 @@ async function testDualOutputSystem() {
     console.log('\n🎬 Testing user session start...');
     
     // Navigate first
-    await client.callTool({
-      name: 'browser_navigate',
-      arguments: { url: 'https://example.com' }
-    });
+    console.log('📍 Navigating to example.com...');
+    try {
+      const navResult = await client.callTool({
+        name: 'browser_navigate',
+        arguments: { url: 'https://example.com' }
+      });
+      console.log('✅ Navigation completed:', navResult.content[0].text.split('\n')[0]);
+    } catch (error) {
+      console.error('❌ Navigation failed:', error.message);
+      return;
+    }
     
-    const startResult = await client.callTool({
-      name: 'browser_start_user_session',
-      arguments: { enableTracing: true }
-    });
-    
-    const startText = startResult.content[0].text;
-    if (startText.includes('DUAL RECORDING SYSTEM')) {
-      console.log('✅ User session started with dual recording messaging');
-    } else {
-      console.log('⚠️  Session started but missing dual recording messaging');
+    try {
+      const startResult = await client.callTool({
+        name: 'browser_start_user_session',
+        arguments: { enableTracing: true }
+      });
+      
+      const startText = startResult.content[0].text;
+      console.log('✅ Session start result received');
+      
+      if (startText.includes('DUAL RECORDING SYSTEM')) {
+        console.log('✅ User session started with dual recording messaging');
+      } else {
+        console.log('⚠️  Session started but missing dual recording messaging');
+        console.log('Response:', startText.split('\n')[0]);
+      }
+    } catch (error) {
+      console.error('❌ Session start failed:', error.message);
+      return;
     }
 
     // Test 3: Simulate some programmatic actions for trace
