@@ -17,7 +17,7 @@ async function testDualOutputSystem() {
   
   const transport = new StdioClientTransport({
     command: 'node',
-    args: ['cli.js', '--save-trace-with-user-actions', '--record-user-actions'],
+    args: ['cli.js', '--save-trace-with-user-actions', '--record-user-actions', '--save-session'],
     cwd: process.cwd(),
   });
 

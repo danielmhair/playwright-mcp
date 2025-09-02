@@ -69,7 +69,7 @@ const defaultConfig: FullConfig = {
     blockedOrigins: undefined,
   },
   server: {},
-  outputDir: path.join(os.tmpdir(), 'playwright-mcp-output', sanitizeForFilePath(new Date().toISOString())),
+  outputDir: path.join(process.cwd(), 'playwright-mcp-output', sanitizeForFilePath(new Date().toISOString())),
 };
 
 type BrowserUserConfig = NonNullable<Config['browser']>;

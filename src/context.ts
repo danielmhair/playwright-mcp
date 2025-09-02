@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
+import path from 'path';
 import debug from 'debug';
 import * as playwright from 'playwright';
-import path from 'path';
 
 import { logUnhandledError } from './log.js';
 import { Tab } from './tab.js';
@@ -167,30 +167,30 @@ export class Context {
   }
 
   async flushInputRecorder(): Promise<void> {
-    if (this._inputRecorder) {
+    if (this._inputRecorder)
       await (this._inputRecorder as any)._flush();
-    }
+
   }
 
   async _getBrowserContextForTracing(): Promise<playwright.BrowserContext | undefined> {
-    if (!this._browserContextPromise) {
+    if (!this._browserContextPromise)
       return undefined;
-    }
+
     const { browserContext } = await this._browserContextPromise;
     return browserContext;
   }
 
   async createUserSessionTrace(filename: string = `user-session-${Date.now()}`): Promise<string | undefined> {
-    if (!this.config.browser.launchOptions.tracesDir) {
+    if (!this.config.browser.launchOptions.tracesDir)
       return undefined;
-    }
+
 
     const { browserContext } = await this._ensureBrowserContext();
     const tracePath = path.join(this.config.browser.launchOptions.tracesDir, `${filename}.zip`);
-    
+
     try {
       await browserContext.tracing.stop({ path: tracePath });
-      
+
       // Restart tracing if needed for continuous operation
       if (this.config.saveTrace || this.config.saveTraceWithUserActions) {
         await browserContext.tracing.start({
@@ -200,7 +200,7 @@ export class Context {
           sources: true,
         });
       }
-      
+
       return tracePath;
     } catch (error) {
       throw new Error(`Failed to create trace file: ${error}`);
@@ -372,19 +372,45 @@ export class InputRecorder {
   }
 
   private async _recordTraceStep(title: string, page?: playwright.Page, actionData?: any) {
-    // ARCHITECTURAL CONCLUSION: This approach is fundamentally wrong
-    // 
-    // Playwright traces are designed for PROGRAMMATIC actions (API calls)
-    // InputRecorder captures HUMAN actions (DOM events)  
-    // These are incompatible systems - forcing them together is brittle
+    // ARCHITECTURAL SOLUTION: Use Playwright's native tracing.group() API
     //
-    // CORRECT SOLUTION: Dual output approach
-    // 1. Playwright trace.zip: Screenshots, network, programmatic actions
-    // 2. Session .md log: Detailed human interaction timeline
-    //
-    // User gets BOTH files with complete information
-    // No need to hack incompatible systems together
-    
-    // Removed all trace injection attempts - they were architecturally wrong
+    // This approach uses Playwright's official API for custom trace entries
+    // - Uses browserContext.tracing.group() with rich metadata
+    // - Appears natively in trace viewer timeline
+    // - No hacking or brittle workarounds
+    // - Maintains trace integrity
+
+    if (!actionData || !this._browserContext)
+      return;
+
+
+    try {
+      const browserContext = this._browserContext;
+
+      // Create trace group for human action with embedded metadata
+      const actionType = actionData.action?.name || 'unknown';
+      const selector = actionData.action?.selector || '';
+      const pageUrl = page?.url() || '';
+      const timestamp = new Date().toISOString();
+      const button = actionData.action?.button ? ` [${actionData.action.button}]` : '';
+      const text = actionData.action?.text ? ` "${actionData.action.text}"` : '';
+
+      // Embed all metadata in the title for trace viewer visibility
+      const traceTitle = `👤 Human ${actionType}${button}${text} → ${selector} | ${pageUrl} | ${timestamp}`;
+
+      await browserContext.tracing.group(traceTitle, {
+        location: {
+          file: 'human-action',
+          line: Date.now(),
+          column: 0
+        }
+      });
+
+      await browserContext.tracing.groupEnd();
+
+    } catch (error) {
+      // Fail silently to not interfere with user actions
+      console.debug('Failed to record trace step:', error);
+    }
   }
 }
