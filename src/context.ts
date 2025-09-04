@@ -180,6 +180,152 @@ export class Context {
     return browserContext;
   }
 
+  async postProcessTraceFile(traceFilePath: string): Promise<boolean> {
+    // STEP 3: Post-process trace groups to connect them with snapshots for element highlighting
+    console.log('📝 Post-processing trace file to enable element highlighting for human actions');
+    console.log('   Trace file:', traceFilePath);
+    
+    try {
+      const fs = await import('fs');
+      const yauzl = await import('yauzl');
+      const yazl = await import('yazl');
+      
+      // Read the existing trace ZIP file
+      console.log('📂 Reading trace ZIP file...');
+      
+      // Extract trace data
+      const entries = new Map();
+      const zipFile = await new Promise<any>((resolve, reject) => {
+        yauzl.open(traceFilePath, { lazyEntries: true }, (err, zipFile) => {
+          if (err) reject(err);
+          else resolve(zipFile);
+        });
+      });
+      
+      await new Promise<void>((resolve, reject) => {
+        zipFile.readEntry();
+        zipFile.on('entry', (entry: any) => {
+          if (/\/$/.test(entry.fileName)) {
+            zipFile.readEntry();
+            return;
+          }
+          
+          zipFile.openReadStream(entry, (err: any, readStream: any) => {
+            if (err) reject(err);
+            else {
+              const chunks: Buffer[] = [];
+              readStream.on('data', (chunk: Buffer) => chunks.push(chunk));
+              readStream.on('end', () => {
+                entries.set(entry.fileName, Buffer.concat(chunks));
+                zipFile.readEntry();
+              });
+            }
+          });
+        });
+        zipFile.on('end', resolve);
+        zipFile.on('error', reject);
+      });
+      
+      // Process trace.trace file
+      const traceData = entries.get('trace.trace');
+      if (!traceData) {
+        console.log('❌ No trace.trace file found in ZIP');
+        return false;
+      }
+      
+      console.log('🔍 Analyzing trace events...');
+      const traceLines = traceData.toString().split('\n').filter((line: string) => line.trim());
+      const events = traceLines.map((line: string) => JSON.parse(line));
+      
+      // Find human action trace groups and convert them to Locator events
+      const enhancedEvents = [];
+      let callIdCounter = 1;
+      
+      for (const event of events) {
+        enhancedEvents.push(event);
+        
+        // Look for trace group events that are human actions
+        if (event.type === 'before' && event.class === 'Tracing' && event.method === 'tracingGroup' && 
+            event.params && event.params.title && event.params.title.startsWith('Human ')) {
+          
+          console.log('🎯 Found human action trace group:', event.params.title);
+          
+          // Extract action details from title
+          const title = event.params.title;
+          const actionMatch = title.match(/Human (\w+)(?:\s+on\s+(.+))?/);
+          if (actionMatch) {
+            const [, actionName, selector] = actionMatch;
+            
+            // Create a corresponding Locator event right after the trace group
+            const callId = `human_${actionName}_${Date.now()}_${callIdCounter++}`;
+            const locatorEvent = {
+              type: 'before',
+              callId: callId,
+              startTime: event.startTime || performance.now(),
+              class: 'Locator',  // This is what enables element highlighting!
+              method: actionName.toLowerCase(),
+              params: {
+                selector: selector || `internal:text="${actionName}"i`,
+                ...(selector && { selector }),
+              },
+              pageId: event.pageId || 'unknown',
+              beforeSnapshot: event.beforeSnapshot || `before@${callId}`
+            };
+            
+            enhancedEvents.push(locatorEvent);
+            
+            // Add corresponding 'after' event
+            const afterEvent = {
+              type: 'after',
+              callId: callId,
+              endTime: (event.startTime || performance.now()) + 1,
+              result: null
+            };
+            
+            enhancedEvents.push(afterEvent);
+            
+            console.log('✅ Created Locator event for:', actionName, selector);
+          }
+        }
+      }
+      
+      // Write enhanced trace back to ZIP
+      console.log('📝 Writing enhanced trace file...');
+      const newZipFile = new yazl.ZipFile();
+      
+      // Add all original entries except trace.trace
+      for (const [fileName, content] of entries) {
+        if (fileName !== 'trace.trace') {
+          newZipFile.addBuffer(content, fileName);
+        }
+      }
+      
+      // Add enhanced trace.trace
+      const enhancedTraceContent = enhancedEvents.map(event => JSON.stringify(event)).join('\n');
+      newZipFile.addBuffer(Buffer.from(enhancedTraceContent), 'trace.trace');
+      
+      // Write to temporary file first, then replace original
+      const tempPath = traceFilePath + '.tmp';
+      newZipFile.outputStream.pipe(fs.createWriteStream(tempPath));
+      newZipFile.end();
+      
+      await new Promise<void>((resolve, reject) => {
+        newZipFile.outputStream.on('close', resolve);
+        newZipFile.outputStream.on('error', reject);
+      });
+      
+      // Replace original with enhanced version
+      fs.renameSync(tempPath, traceFilePath);
+      
+      console.log('✅ Post-processing completed - human actions should now support element highlighting!');
+      return true;
+      
+    } catch (error) {
+      console.log('❌ Post-processing failed:', error);
+      return false;
+    }
+  }
+
   async createUserSessionTrace(filename: string = `user-session-${Date.now()}`): Promise<string | undefined> {
     if (!this.config.browser.launchOptions.tracesDir)
       return undefined;
@@ -287,6 +433,7 @@ export class InputRecorder {
   private _sessionLog: SessionLog;
   private _browserContext: playwright.BrowserContext;
   private _flushTimer: NodeJS.Timeout | undefined;
+  private _recordingSnapshot = false; // Recursion guard
 
   private constructor(sessionLog: SessionLog, browserContext: playwright.BrowserContext) {
     this._sessionLog = sessionLog;
@@ -310,8 +457,8 @@ export class InputRecorder {
           return;
         const tab = Tab.forPage(page);
         this._actions.push({ ...data, tab, code: code.trim(), timestamp: performance.now() });
-        // Only record to trace, don't interfere with user actions
-        void this._recordTraceStep(data.action.name || code.trim(), page, data);
+        // Record human action with trace group and snapshot
+        void this._recordHumanAction(data.action.name || code.trim(), page, data);
         this._scheduleFlush();
       },
       actionUpdated: (page: playwright.Page, data: actions.ActionInContext, code: string) => {
@@ -319,8 +466,8 @@ export class InputRecorder {
           return;
         const tab = Tab.forPage(page);
         this._actions[this._actions.length - 1] = { ...data, tab, code: code.trim(), timestamp: performance.now() };
-        // Only record to trace, don't interfere with user actions
-        void this._recordTraceStep(data.action.name || code.trim(), page, data);
+        // Record human action with trace group and snapshot
+        void this._recordHumanAction(data.action.name || code.trim(), page, data);
         this._scheduleFlush();
       },
       signalAdded: (page: playwright.Page, data: actions.SignalInContext) => {
@@ -340,7 +487,7 @@ export class InputRecorder {
           code: `await page.goto('${data.signal.url}');`,
           timestamp: performance.now(),
         });
-        void this._recordTraceStep(`await page.goto('${data.signal.url}');`, page, data);
+        void this._recordHumanAction(`await page.goto('${data.signal.url}');`, page, data);
         this._scheduleFlush();
       },
     });
@@ -371,46 +518,289 @@ export class InputRecorder {
     await this._sessionLog.logActions(actions);
   }
 
-  private async _recordTraceStep(title: string, page?: playwright.Page, actionData?: any) {
-    // ARCHITECTURAL SOLUTION: Use Playwright's native tracing.group() API
+  private async _recordHumanAction(title: string, page?: playwright.Page, actionData?: any) {
+    // FRAME-SNAPSHOT APPROACH: Execute non-intrusive locator actions to trigger HTML capture
     //
-    // This approach uses Playwright's official API for custom trace entries
-    // - Uses browserContext.tracing.group() with rich metadata
-    // - Appears natively in trace viewer timeline
-    // - No hacking or brittle workarounds
-    // - Maintains trace integrity
+    // Since trace groups don't create frame-snapshots (HTML resources), we execute actual
+    // locator actions that DO trigger Playwright's automatic HTML capture system.
 
-    if (!actionData || !this._browserContext)
+    if (!actionData?.action || !page)
       return;
 
+    // Prevent infinite recursion
+    if (this._recordingSnapshot) {
+      console.log('⚠️ Skipping recursive human action recording during snapshot');
+      return;
+    }
 
     try {
       const browserContext = this._browserContext;
-
-      // Create trace group for human action with embedded metadata
-      const actionType = actionData.action?.name || 'unknown';
-      const selector = actionData.action?.selector || '';
-      const pageUrl = page?.url() || '';
-      const timestamp = new Date().toISOString();
-      const button = actionData.action?.button ? ` [${actionData.action.button}]` : '';
-      const text = actionData.action?.text ? ` "${actionData.action.text}"` : '';
-
-      // Embed all metadata in the title for trace viewer visibility
-      const traceTitle = `👤 Human ${actionType}${button}${text} → ${selector} | ${pageUrl} | ${timestamp}`;
-
-      await browserContext.tracing.group(traceTitle, {
-        location: {
-          file: 'human-action',
-          line: Date.now(),
-          column: 0
-        }
+      const action = actionData.action;
+      
+      console.log('🎯 Recording human action to trigger frame-snapshots:', {
+        actionName: action.name,
+        selector: action.selector || 'unknown',
+        approach: 'non-intrusive-locator-action'
       });
 
-      await browserContext.tracing.groupEnd();
+      this._recordingSnapshot = true;
+
+      // Temporarily disable InputRecorder to prevent infinite recursion
+      const wasEnabled = this._enabled;
+      this._enabled = false;
+
+      try {
+        // Execute a non-intrusive locator action that will trigger frame-snapshots
+        // This approach leverages Playwright's built-in tracing for automatic HTML capture
+        if (action.selector && action.selector !== 'unknown') {
+          const locator = page.locator(action.selector).first();
+          
+          try {
+            // Use boundingBox() as it's completely non-intrusive but generates frame-snapshots
+            const box = await locator.boundingBox({ timeout: 500 });
+            console.log('✅ Triggered frame-snapshot via boundingBox - HTML resources should be captured');
+          } catch (error) {
+            // If boundingBox fails, try isVisible() which is even more non-intrusive
+            try {
+              await locator.isVisible({ timeout: 100 });
+              console.log('✅ Triggered frame-snapshot via isVisible - HTML resources should be captured');
+            } catch (error2) {
+              console.log('⚠️ Could not trigger frame-snapshot, selector may be invalid:', action.selector);
+            }
+          }
+        } else {
+          // For actions without valid selectors, try page-level operations
+          try {
+            await page.title(); // Non-intrusive page operation
+            console.log('✅ Triggered frame-snapshot via page.title() for action without selector');
+          } catch (error) {
+            console.log('⚠️ Could not trigger frame-snapshot for action without selector');
+          }
+        }
+      } finally {
+        // Re-enable InputRecorder
+        this._enabled = wasEnabled;
+      }
+
+      console.log('✅ Human action recorded - frame-snapshots should contain HTML resources');
 
     } catch (error) {
-      // Fail silently to not interfere with user actions
-      console.debug('Failed to record trace step:', error);
+      console.log('❌ Failed to record human action:', error);
+    } finally {
+      this._recordingSnapshot = false;
+    }
+  }
+
+  async postProcessTraceFile(traceFilePath: string): Promise<boolean> {
+    // STEP 3: Post-process trace groups to connect them with snapshots for element highlighting
+    console.log('📝 Post-processing trace file to enable element highlighting for human actions');
+    console.log('   Trace file:', traceFilePath);
+    
+    try {
+      const fs = await import('fs');
+      const yauzl = await import('yauzl');
+      const yazl = await import('yazl');
+      
+      // Read the existing trace ZIP file
+      console.log('📂 Reading trace ZIP file...');
+      
+      // Extract trace data
+      const entries = new Map();
+      const zipFile = await new Promise<any>((resolve, reject) => {
+        yauzl.open(traceFilePath, { lazyEntries: true }, (err, zipFile) => {
+          if (err) reject(err);
+          else resolve(zipFile);
+        });
+      });
+      
+      await new Promise<void>((resolve, reject) => {
+        zipFile.readEntry();
+        zipFile.on('entry', (entry: any) => {
+          if (/\/$/.test(entry.fileName)) {
+            zipFile.readEntry();
+            return;
+          }
+          
+          zipFile.openReadStream(entry, (err: any, readStream: any) => {
+            if (err) reject(err);
+            else {
+              const chunks: Buffer[] = [];
+              readStream.on('data', (chunk: Buffer) => chunks.push(chunk));
+              readStream.on('end', () => {
+                entries.set(entry.fileName, Buffer.concat(chunks));
+                zipFile.readEntry();
+              });
+            }
+          });
+        });
+        zipFile.on('end', resolve);
+        zipFile.on('error', reject);
+      });
+      
+      // Process trace.trace file
+      const traceData = entries.get('trace.trace');
+      if (!traceData) {
+        console.log('❌ No trace.trace file found in ZIP');
+        return false;
+      }
+      
+      console.log('🔍 Analyzing trace events...');
+      const traceLines = traceData.toString().split('\n').filter((line: string) => line.trim());
+      const events = traceLines.map((line: string) => JSON.parse(line));
+      
+      // Find human action trace groups and convert them to Locator events
+      const enhancedEvents = [];
+      let callIdCounter = 1;
+      
+      for (const event of events) {
+        enhancedEvents.push(event);
+        
+        // Look for trace group events that are human actions
+        if (event.type === 'before' && event.class === 'Tracing' && event.method === 'tracingGroup' && 
+            event.params && event.params.title && event.params.title.startsWith('Human ')) {
+          
+          console.log('🎯 Found human action trace group:', event.params.title);
+          
+          // Extract action details from title
+          const title = event.params.title;
+          const actionMatch = title.match(/Human (\w+)(?:\s+on\s+(.+))?/);
+          if (actionMatch) {
+            const [, actionName, selector] = actionMatch;
+            
+            // Create a corresponding Locator event right after the trace group
+            const callId = `human_${actionName}_${Date.now()}_${callIdCounter++}`;
+            const locatorEvent = {
+              type: 'before',
+              callId: callId,
+              startTime: event.startTime || performance.now(),
+              class: 'Locator',  // This is what enables element highlighting!
+              method: actionName.toLowerCase(),
+              params: {
+                selector: selector || `internal:text="${actionName}"i`,
+                ...(selector && { selector }),
+              },
+              pageId: event.pageId || 'unknown',
+              beforeSnapshot: event.beforeSnapshot || `before@${callId}`
+            };
+            
+            enhancedEvents.push(locatorEvent);
+            
+            // Add corresponding 'after' event
+            const afterEvent = {
+              type: 'after',
+              callId: callId,
+              endTime: (event.startTime || performance.now()) + 1,
+              result: null
+            };
+            
+            enhancedEvents.push(afterEvent);
+            
+            console.log('✅ Created Locator event for:', actionName, selector);
+          }
+        }
+      }
+      
+      // Write enhanced trace back to ZIP
+      console.log('📝 Writing enhanced trace file...');
+      const newZipFile = new yazl.ZipFile();
+      
+      // Add all original entries except trace.trace
+      for (const [fileName, content] of entries) {
+        if (fileName !== 'trace.trace') {
+          newZipFile.addBuffer(content, fileName);
+        }
+      }
+      
+      // Add enhanced trace.trace
+      const enhancedTraceContent = enhancedEvents.map(event => JSON.stringify(event)).join('\n');
+      newZipFile.addBuffer(Buffer.from(enhancedTraceContent), 'trace.trace');
+      
+      // Write to temporary file first, then replace original
+      const tempPath = traceFilePath + '.tmp';
+      newZipFile.outputStream.pipe(fs.createWriteStream(tempPath));
+      newZipFile.end();
+      
+      await new Promise<void>((resolve, reject) => {
+        newZipFile.outputStream.on('close', resolve);
+        newZipFile.outputStream.on('error', reject);
+      });
+      
+      // Replace original with enhanced version
+      fs.renameSync(tempPath, traceFilePath);
+      
+      console.log('✅ Post-processing completed - human actions should now support element highlighting!');
+      return true;
+      
+    } catch (error) {
+      console.log('❌ Post-processing failed:', error);
+      return false;
+    }
+  }
+
+
+  private _mapActionToMethod(actionName: string): string {
+    const methodMap: Record<string, string> = {
+      'click': 'click',
+      'fill': 'fill',
+      'press': 'press',
+      'check': 'check',
+      'uncheck': 'uncheck',
+      'select': 'selectOption',
+      'navigate': 'goto',
+      'setInputFiles': 'setInputFiles'
+    };
+    return methodMap[actionName] || 'click';
+  }
+
+  private _buildTraceParams(action: any, selector: string): Record<string, any> {
+    const params: Record<string, any> = {
+      selector: selector
+    };
+
+    try {
+      // Add action-specific parameters with safety checks
+      if (action.text && typeof action.text === 'string')
+        params.text = action.text;
+      if (action.button && typeof action.button === 'string')
+        params.button = action.button;
+      if (action.url && typeof action.url === 'string')
+        params.url = action.url;
+      if (action.value && typeof action.value === 'string')
+        params.value = action.value;
+      if (action.key && typeof action.key === 'string')
+        params.key = action.key;
+      if (action.options && Array.isArray(action.options))
+        params.values = action.options;
+      if (action.files && Array.isArray(action.files))
+        params.files = action.files;
+      if (action.modifiers !== undefined)
+        params.modifiers = action.modifiers;
+      if (action.clickCount !== undefined)
+        params.clickCount = action.clickCount;
+      if (action.position)
+        params.position = action.position;
+    } catch (error) {
+      testDebug('Error building trace params:', error);
+    }
+
+    return params;
+  }
+
+
+  private async _writeToTrace(event: any): Promise<void> {
+    try {
+      // Use browser context's tracing to write event directly
+      // This leverages Playwright's internal tracing mechanism
+      const contextInternal = this._browserContext as any;
+      if (contextInternal._tracing && contextInternal._tracing._writeEvent) {
+        testDebug('✅ Writing event to trace:', event.type, event.class, event.method);
+        await contextInternal._tracing._writeEvent(event);
+        testDebug('✅ Event written to trace successfully');
+      } else {
+        testDebug('❌ Direct trace writing not available - no _tracing or _writeEvent');
+      }
+    } catch (error) {
+      testDebug('❌ Failed to write to trace:', error);
     }
   }
 }

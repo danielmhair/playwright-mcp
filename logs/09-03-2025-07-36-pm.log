@@ -1,0 +1,61 @@
+📁 ZIP file check - size: 1134354 first 4 bytes: 504b0304
+✅ Confirmed ZIP file format
+📦 Importing ZIP libraries...
+✅ ZIP libraries loaded successfully
+📁 Creating temporary directory...
+✅ Temp directory created: C:\Users\danie\AppData\Local\Temp\playwright-trace-hT1qgy
+🔄 Starting Promise-based ZIP processing...
+🔓 Opening ZIP file for extraction with path: C:\Workspace\playwright-mcp\playwright-mcp-output\2025-09-04T01-34-46.200Z\traces\dual-output-test.zip
+🔍 yauzl object available: object open method: function
+📞 About to call yauzl.open...
+📞 yauzl.open CALLBACK EXECUTED - err: none
+✅ ZIP file opened successfully
+📁 Found ZIP entry: trace.trace
+📁 Found ZIP entry: trace.network
+📁 Found ZIP entry: resources/page@4273e9d2e0a2b0b1ec7ce78662e79ff1-1756949687041.jpeg
+...
+📁 Found ZIP entry: resources/page@4273e9d2e0a2b0b1ec7ce78662e79ff1-1756949696904.jpeg
+📁 Found ZIP entry: resources/4a3ce8ee11e091dd7923f4d8c6e5b5e41ec7c047.html
+...
+📁 Found ZIP entry: trace.stacks
+📁 Found ZIP entry: resources/src@91ca74ca91e4382b609e6e9b4a337749e728a4dd.txt
+...
+🏁 ZIP extraction completed, found 85 total files
+📋 All files in ZIP:
+  1. trace.trace
+  2. trace.network
+  3. resources/page@4273e9d2e0a2b0b1ec7ce78662e79ff1-1756949687041.jpeg
+  ...
+  32. resources/page@4273e9d2e0a2b0b1ec7ce78662e79ff1-1756949696904.jpeg
+  33. resources/4a3ce8ee11e091dd7923f4d8c6e5b5e41ec7c047.html
+  ...
+  77. resources/062c8fc6c3f398fb0fb2bb516b5a213009507ddc.jpeg
+  78. resources/066387cc0395e65581e5f9cd4500f81fdcefbd10.png
+  79. resources/6379078d47a8bf2a362d709c3f8c7febed8aed76.dat
+  80. trace.stacks
+  81. resources/src@91ca74ca91e4382b609e6e9b4a337749e728a4dd.txt
+  ...
+  85. resources/src@12c92d3ad3840403704e09d9c9ae6460570bc1ff.txt
+🔍 Possible trace files: [
+  'trace.trace',
+  'trace.network',
+  'resources/147df79276b768953f4156a53836b16b33024df4.json',
+  'resources/49f37d35043031e93f816d4c76e0cf9b5d3c7e7a.json',
+  'resources/ec969438636a2dae46339e918b242ff8d912fba7.json',
+  'resources/a08dec6356411b7465a72085d3b2486c9ecd74db.json',
+  'resources/a8022101c69aac5d4816f268a6b97e75fd399248.json',
+  'trace.stacks'
+]
+❌ trace.json not found in ZIP file
+✅ Dual output messaging present
+
+📁 Verifying output files...
+✅ Trace file exists: 1.08 MB
+
+🎭 Testing trace viewer tool...
+✅ Trace viewer listing works
+
+📋 Testing enhanced session log format...
+⚠️  No session directories found
+
+✅ Dual output system test completed!

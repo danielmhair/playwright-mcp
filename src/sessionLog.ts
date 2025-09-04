@@ -16,8 +16,11 @@
 
 import fs from 'fs';
 import path from 'path';
+import debug from 'debug';
 
 import { outputFile  } from './config.js';
+
+const testDebug = debug('pw:mcp:session');
 import { Response } from './response.js';
 import type { FullConfig } from './config.js';
 import type * as actions from './actions.js';
@@ -39,8 +42,8 @@ export class SessionLog {
   static async create(config: FullConfig): Promise<SessionLog> {
     const sessionFolder = await outputFile(config, `session-${Date.now()}`);
     await fs.promises.mkdir(sessionFolder, { recursive: true });
-    // eslint-disable-next-line no-console
-    console.error(`Session: ${sessionFolder}`);
+    // Use debug logging instead of console.error to avoid corrupting MCP protocol
+    testDebug(`Session: ${sessionFolder}`);
     
     const sessionLog = new SessionLog(sessionFolder);
     await sessionLog._initializeSessionHeader(config);

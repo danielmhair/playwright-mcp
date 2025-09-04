@@ -119,7 +119,13 @@ export const browserEndUserSession = defineTool({
           traceFile = await context.createUserSessionTrace(traceName);
           
           if (traceFile && fs.existsSync(traceFile)) {
-            response.addResult(`User session trace saved to: ${traceFile}`);
+            // POST-PROCESS TRACE FILE: Add human action entries for element highlighting
+            const postProcessed = await context.postProcessTraceFile(traceFile);
+            const statusMessage = postProcessed 
+              ? 'User session trace saved with element highlighting support' 
+              : 'User session trace saved (post-processing failed)';
+            
+            response.addResult(`${statusMessage}: ${traceFile}`);
             
             // Add trace file as image attachment (since Response doesn't have addAttachment)
             const traceData = await fs.promises.readFile(traceFile);

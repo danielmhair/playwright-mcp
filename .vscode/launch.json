@@ -1,0 +1,52 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug MCP Server",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/cli.js",
+      "console": "integratedTerminal",
+      "preLaunchTask": "build",
+      "env": {
+        "DEBUG": "pw:mcp:test",
+        "NODE_OPTIONS": "--enable-source-maps"
+      },
+      "sourceMaps": true,
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
+    },
+    {
+      "name": "Debug MCP Server with Port",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/cli.js",
+      "args": ["--port", "3001", "--save-trace-with-user-actions", "--record-user-actions", "--save-session"],
+      "console": "integratedTerminal",
+      "preLaunchTask": "build",
+      "env": {
+        "DEBUG": "pw:mcp:test",
+        "NODE_OPTIONS": "--enable-source-maps"
+      },
+      "sourceMaps": true,
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
+    },
+    {
+      "name": "Debug Dual Output connect-only",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/test-dual-output-connect-only.js",
+      "console": "integratedTerminal",
+      "preLaunchTask": "build",
+      "env": {
+        "DEBUG": "pw:mcp:test"
+      },
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
+    }
+  ]
+}

@@ -88,8 +88,11 @@ program
         const urlPrefix = server.urlPrefix('human-readable');
         const traceName = config.saveTraceWithUserActions ? 'user-session-trace' : 'trace';
         const url = urlPrefix + '/trace/index.html?trace=' + config.browser.launchOptions.tracesDir + `/${traceName}.json`;
-        // eslint-disable-next-line no-console
-        console.error('\nTrace viewer listening on ' + url);
+        // Use debug logging to avoid corrupting MCP protocol - suppress in MCP mode
+        if (process.env.NODE_ENV !== 'mcp') {
+          // eslint-disable-next-line no-console
+          process.stderr.write(`\nTrace viewer listening on ${url}\n`);
+        }
       }
     });
 

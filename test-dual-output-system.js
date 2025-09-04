@@ -19,6 +19,7 @@ async function testDualOutputSystem() {
     command: 'node',
     args: ['cli.js', '--save-trace-with-user-actions', '--record-user-actions', '--save-session'],
     cwd: process.cwd(),
+    stdio: ['pipe', 'pipe', 'inherit'], // Allow stderr from server to show in console
   });
 
   try {
@@ -90,6 +91,33 @@ async function testDualOutputSystem() {
       arguments: {}
     });
     console.log('✅ Snapshot taken');
+
+    // Test 3b: Add some programmatic clicks to compare with human actions
+    console.log('🤖 Performing programmatic click actions...');
+    
+    try {
+      // Click on the "More information..." link programmatically
+      const clickResult = await client.callTool({
+        name: 'browser_click',
+        arguments: { 
+          selector: 'text=More information...',
+          timeout: 5000
+        }
+      });
+      console.log('✅ Programmatic click completed');
+      
+      // Wait a moment then go back to example.com
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      await client.callTool({
+        name: 'browser_navigate',
+        arguments: { url: 'https://example.com' }
+      });
+      console.log('✅ Navigated back to example.com');
+      
+    } catch (error) {
+      console.log('⚠️  Programmatic click failed:', error.message);
+    }
 
     // Test 4: List session logs tool
     console.log('\n📝 Testing session logs listing...');
@@ -199,29 +227,6 @@ async function testDualOutputSystem() {
     } else {
       console.log('⚠️  No session directories found');
     }
-
-    // Test 10: Complete system validation
-    console.log('\n🎉 System Validation Summary:');
-    console.log('');
-    console.log('📊 DUAL OUTPUT SYSTEM VERIFICATION:');
-    console.log('   1. ✅ Playwright trace.zip generated with visual timeline');
-    console.log('   2. ✅ Enhanced session.md log with human interaction details');
-    console.log('   3. ✅ Trace viewer integration working');
-    console.log('   4. ✅ Session log listing and management tools');
-    console.log('   5. ✅ Comprehensive user documentation and guidance');
-    console.log('');
-    console.log('🚀 KEY BENEFITS ACHIEVED:');
-    console.log('   • Complete visual debugging with screenshots and network');
-    console.log('   • Detailed human action timeline with timestamps');
-    console.log('   • No interference with user interactions during recording');
-    console.log('   • Architectural separation of concerns (no brittle hacks)');
-    console.log('   • Future-proof, maintainable solution');
-    console.log('');
-    console.log('💡 NEXT STEPS:');
-    console.log('   • Open trace viewer to examine visual timeline');
-    console.log('   • Review session.md for detailed interaction analysis');
-    console.log('   • Use both outputs together for comprehensive debugging');
-
   } catch (error) {
     console.error('❌ Test error:', error.message);
   } finally {
