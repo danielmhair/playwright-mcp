@@ -8,7 +8,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import fs from 'fs';
-import path from 'path';
 import readline from 'readline'
 
 async function startBrowserRecordingSession() {
@@ -34,8 +33,6 @@ async function startBrowserRecordingSession() {
     const requiredTools = [
       'browser_start_user_session',
       'browser_end_user_session', 
-      'browser_open_trace_viewer',
-      'browser_list_session_logs'
     ];
     
     const availableTools = tools.tools.map(t => t.name);
@@ -49,7 +46,7 @@ async function startBrowserRecordingSession() {
     }
 
     console.log('📝 Triggering Playwright MCP Server to record a browser session');
-    const startResult = await client.callTool({
+    await client.callTool({
       name: 'browser_start_user_session',
       arguments: { 
         filename: 'dual-output-test',
@@ -78,36 +75,15 @@ async function startBrowserRecordingSession() {
 
     const endText = endResult.content[0].text;
     
-    console.log('\n📁 Verifying output files...');
-    
-    let traceFile;
-    
     const traceMatch = endText.match(/📦 Playwright trace\.zip: (.+)/);
     if (traceMatch) {
-      traceFile = traceMatch[1];
+      const traceFile = traceMatch[1];
       if (fs.existsSync(traceFile)) {
         const stats = fs.statSync(traceFile);
-        console.log(`✅ Trace file exists: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
+        console.log(`📁 Trace file exists: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
       } else {
         console.log('❌ Trace file not found at:', traceFile);
       }
-    }
-
-    if (traceFile && fs.existsSync(traceFile)) {
-      console.log('\n🎭 Testing trace viewer tool...');
-      
-      // List available traces
-      const traceListResult = await client.callTool({
-        name: 'browser_open_trace_viewer',
-        arguments: {}
-      });
-      
-      const traceListText = traceListResult.content[0].text;
-      if (traceListText.includes('Available Trace Files')) {
-        console.log('✅ Trace viewer listing works');
-      }
-    } else {
-      console.log('❌ Trace viewer didnt open...');
     }
   } catch (error) {
     console.error('❌ Test error:', error.message);

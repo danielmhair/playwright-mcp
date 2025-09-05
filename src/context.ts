@@ -180,28 +180,31 @@ export class Context {
     return browserContext;
   }
 
-  async postProcessTraceFile(traceFilePath: string): Promise<boolean> {
-    // STEP 3: Post-process trace groups to connect them with snapshots for element highlighting
-    console.log('📝 Post-processing trace file to enable element highlighting for human actions');
+  async postProcessTraceFile(traceFilePath: string, customActionName?: string): Promise<boolean> {
+    // Post-process trace file to rename "Bounding box" entries to custom names
+    const actionName = customActionName || 'Human Action';
+    console.log(`📝 Post-processing trace file to rename "Bounding box" entries to "${actionName}"`);
     console.log('   Trace file:', traceFilePath);
-    
+
     try {
       const fs = await import('fs');
       const yauzl = await import('yauzl');
       const yazl = await import('yazl');
-      
+
       // Read the existing trace ZIP file
       console.log('📂 Reading trace ZIP file...');
-      
+
       // Extract trace data
       const entries = new Map();
       const zipFile = await new Promise<any>((resolve, reject) => {
         yauzl.open(traceFilePath, { lazyEntries: true }, (err, zipFile) => {
-          if (err) reject(err);
-          else resolve(zipFile);
+          if (err)
+            reject(err);
+          else
+            resolve(zipFile);
         });
       });
-      
+
       await new Promise<void>((resolve, reject) => {
         zipFile.readEntry();
         zipFile.on('entry', (entry: any) => {
@@ -209,10 +212,9 @@ export class Context {
             zipFile.readEntry();
             return;
           }
-          
+
           zipFile.openReadStream(entry, (err: any, readStream: any) => {
-            if (err) reject(err);
-            else {
+            if (err) {reject(err);} else {
               const chunks: Buffer[] = [];
               readStream.on('data', (chunk: Buffer) => chunks.push(chunk));
               readStream.on('end', () => {
@@ -225,101 +227,67 @@ export class Context {
         zipFile.on('end', resolve);
         zipFile.on('error', reject);
       });
-      
+
       // Process trace.trace file
       const traceData = entries.get('trace.trace');
       if (!traceData) {
         console.log('❌ No trace.trace file found in ZIP');
         return false;
       }
-      
-      console.log('🔍 Analyzing trace events...');
+
+      console.log('🔍 Analyzing trace events to rename "Bounding box" entries...');
       const traceLines = traceData.toString().split('\n').filter((line: string) => line.trim());
       const events = traceLines.map((line: string) => JSON.parse(line));
-      
-      // Find human action trace groups and convert them to Locator events
-      const enhancedEvents = [];
-      let callIdCounter = 1;
-      
-      for (const event of events) {
-        enhancedEvents.push(event);
-        
-        // Look for trace group events that are human actions
-        if (event.type === 'before' && event.class === 'Tracing' && event.method === 'tracingGroup' && 
-            event.params && event.params.title && event.params.title.startsWith('Human ')) {
-          
-          console.log('🎯 Found human action trace group:', event.params.title);
-          
-          // Extract action details from title
-          const title = event.params.title;
-          const actionMatch = title.match(/Human (\w+)(?:\s+on\s+(.+))?/);
-          if (actionMatch) {
-            const [, actionName, selector] = actionMatch;
-            
-            // Create a corresponding Locator event right after the trace group
-            const callId = `human_${actionName}_${Date.now()}_${callIdCounter++}`;
-            const locatorEvent = {
-              type: 'before',
-              callId: callId,
-              startTime: event.startTime || performance.now(),
-              class: 'Locator',  // This is what enables element highlighting!
-              method: actionName.toLowerCase(),
-              params: {
-                selector: selector || `internal:text="${actionName}"i`,
-                ...(selector && { selector }),
-              },
-              pageId: event.pageId || 'unknown',
-              beforeSnapshot: event.beforeSnapshot || `before@${callId}`
-            };
-            
-            enhancedEvents.push(locatorEvent);
-            
-            // Add corresponding 'after' event
-            const afterEvent = {
-              type: 'after',
-              callId: callId,
-              endTime: (event.startTime || performance.now()) + 1,
-              result: null
-            };
-            
-            enhancedEvents.push(afterEvent);
-            
-            console.log('✅ Created Locator event for:', actionName, selector);
-          }
+
+      // Find "Bounding box" events and rename them to custom action name
+      let renamedCount = 0;
+      const modifiedEvents = events.map((event: any) => {
+        // Look for Locator boundingBox events (these are our human actions)
+        if (event.type === 'before' && event.class === 'Locator' && event.method === 'boundingBox') {
+          renamedCount++;
+          console.log(`🎯 Renaming "Bounding box" entry #${renamedCount} to "${actionName}"`);
+
+          // Change the method name to create a custom entry
+          return {
+            ...event,
+            method: 'click', // Change to 'click' so it shows as clickable in trace viewer
+            humanAction: true, // Add marker to identify our custom entries
+          };
         }
-      }
-      
-      // Write enhanced trace back to ZIP
-      console.log('📝 Writing enhanced trace file...');
+        return event;
+      });
+
+      // Write modified trace back to ZIP
+      console.log('📝 Writing modified trace file...');
       const newZipFile = new yazl.ZipFile();
-      
+
       // Add all original entries except trace.trace
       for (const [fileName, content] of entries) {
-        if (fileName !== 'trace.trace') {
+        if (fileName !== 'trace.trace')
           newZipFile.addBuffer(content, fileName);
-        }
+
       }
-      
-      // Add enhanced trace.trace
-      const enhancedTraceContent = enhancedEvents.map(event => JSON.stringify(event)).join('\n');
-      newZipFile.addBuffer(Buffer.from(enhancedTraceContent), 'trace.trace');
-      
+
+      // Add modified trace.trace
+      const modifiedTraceContent = modifiedEvents.map((event: any) => JSON.stringify(event)).join('\n');
+      newZipFile.addBuffer(Buffer.from(modifiedTraceContent), 'trace.trace');
+
       // Write to temporary file first, then replace original
       const tempPath = traceFilePath + '.tmp';
       newZipFile.outputStream.pipe(fs.createWriteStream(tempPath));
       newZipFile.end();
-      
+
       await new Promise<void>((resolve, reject) => {
         newZipFile.outputStream.on('close', resolve);
         newZipFile.outputStream.on('error', reject);
       });
-      
+
       // Replace original with enhanced version
       fs.renameSync(tempPath, traceFilePath);
-      
-      console.log('✅ Post-processing completed - human actions should now support element highlighting!');
+
+      console.log(`✅ Post-processing completed - renamed ${renamedCount} "Bounding box" entries to "${actionName}"!`);
       return true;
-      
+
     } catch (error) {
       console.log('❌ Post-processing failed:', error);
       return false;
@@ -433,7 +401,6 @@ export class InputRecorder {
   private _sessionLog: SessionLog;
   private _browserContext: playwright.BrowserContext;
   private _flushTimer: NodeJS.Timeout | undefined;
-  private _recordingSnapshot = false; // Recursion guard
 
   private constructor(sessionLog: SessionLog, browserContext: playwright.BrowserContext) {
     this._sessionLog = sessionLog;
@@ -519,224 +486,36 @@ export class InputRecorder {
   }
 
   private async _recordHumanAction(title: string, page?: playwright.Page, actionData?: any) {
-    // FRAME-SNAPSHOT APPROACH: Execute non-intrusive locator actions to trigger HTML capture
-    //
-    // Since trace groups don't create frame-snapshots (HTML resources), we execute actual
-    // locator actions that DO trigger Playwright's automatic HTML capture system.
+    // LOCATOR ACTION APPROACH: Execute boundingBox to trigger frame-snapshots
+    // This generates proper "Bounding box" entries in trace viewer with element selectors
+    // and creates frame-snapshots that capture HTML resources
 
     if (!actionData?.action || !page)
       return;
 
-    // Prevent infinite recursion
-    if (this._recordingSnapshot) {
-      console.log('⚠️ Skipping recursive human action recording during snapshot');
-      return;
-    }
-
     try {
-      const browserContext = this._browserContext;
       const action = actionData.action;
-      
+
       console.log('🎯 Recording human action to trigger frame-snapshots:', {
         actionName: action.name,
-        selector: action.selector || 'unknown',
-        approach: 'non-intrusive-locator-action'
+        selector: action.selector || 'unknown'
       });
 
-      this._recordingSnapshot = true;
-
-      // Temporarily disable InputRecorder to prevent infinite recursion
-      const wasEnabled = this._enabled;
-      this._enabled = false;
-
-      try {
-        // Execute a non-intrusive locator action that will trigger frame-snapshots
-        // This approach leverages Playwright's built-in tracing for automatic HTML capture
-        if (action.selector && action.selector !== 'unknown') {
-          const locator = page.locator(action.selector).first();
-          
-          try {
-            // Use boundingBox() as it's completely non-intrusive but generates frame-snapshots
-            const box = await locator.boundingBox({ timeout: 500 });
-            console.log('✅ Triggered frame-snapshot via boundingBox - HTML resources should be captured');
-          } catch (error) {
-            // If boundingBox fails, try isVisible() which is even more non-intrusive
-            try {
-              await locator.isVisible({ timeout: 100 });
-              console.log('✅ Triggered frame-snapshot via isVisible - HTML resources should be captured');
-            } catch (error2) {
-              console.log('⚠️ Could not trigger frame-snapshot, selector may be invalid:', action.selector);
-            }
-          }
-        } else {
-          // For actions without valid selectors, try page-level operations
-          try {
-            await page.title(); // Non-intrusive page operation
-            console.log('✅ Triggered frame-snapshot via page.title() for action without selector');
-          } catch (error) {
-            console.log('⚠️ Could not trigger frame-snapshot for action without selector');
-          }
+      // Execute boundingBox to trigger frame-snapshots - this creates the "Bounding box" entries
+      if (action.selector && action.selector !== 'unknown') {
+        const locator = page.locator(action.selector).first();
+        try {
+          const box = await locator.boundingBox({ timeout: 1000 });
+          console.log('✅ Triggered frame-snapshot via boundingBox - HTML resources captured');
+        } catch (error) {
+          console.log('⚠️ Could not trigger frame-snapshot, selector may be invalid:', action.selector);
         }
-      } finally {
-        // Re-enable InputRecorder
-        this._enabled = wasEnabled;
       }
-
-      console.log('✅ Human action recorded - frame-snapshots should contain HTML resources');
 
     } catch (error) {
       console.log('❌ Failed to record human action:', error);
-    } finally {
-      this._recordingSnapshot = false;
     }
   }
-
-  async postProcessTraceFile(traceFilePath: string): Promise<boolean> {
-    // STEP 3: Post-process trace groups to connect them with snapshots for element highlighting
-    console.log('📝 Post-processing trace file to enable element highlighting for human actions');
-    console.log('   Trace file:', traceFilePath);
-    
-    try {
-      const fs = await import('fs');
-      const yauzl = await import('yauzl');
-      const yazl = await import('yazl');
-      
-      // Read the existing trace ZIP file
-      console.log('📂 Reading trace ZIP file...');
-      
-      // Extract trace data
-      const entries = new Map();
-      const zipFile = await new Promise<any>((resolve, reject) => {
-        yauzl.open(traceFilePath, { lazyEntries: true }, (err, zipFile) => {
-          if (err) reject(err);
-          else resolve(zipFile);
-        });
-      });
-      
-      await new Promise<void>((resolve, reject) => {
-        zipFile.readEntry();
-        zipFile.on('entry', (entry: any) => {
-          if (/\/$/.test(entry.fileName)) {
-            zipFile.readEntry();
-            return;
-          }
-          
-          zipFile.openReadStream(entry, (err: any, readStream: any) => {
-            if (err) reject(err);
-            else {
-              const chunks: Buffer[] = [];
-              readStream.on('data', (chunk: Buffer) => chunks.push(chunk));
-              readStream.on('end', () => {
-                entries.set(entry.fileName, Buffer.concat(chunks));
-                zipFile.readEntry();
-              });
-            }
-          });
-        });
-        zipFile.on('end', resolve);
-        zipFile.on('error', reject);
-      });
-      
-      // Process trace.trace file
-      const traceData = entries.get('trace.trace');
-      if (!traceData) {
-        console.log('❌ No trace.trace file found in ZIP');
-        return false;
-      }
-      
-      console.log('🔍 Analyzing trace events...');
-      const traceLines = traceData.toString().split('\n').filter((line: string) => line.trim());
-      const events = traceLines.map((line: string) => JSON.parse(line));
-      
-      // Find human action trace groups and convert them to Locator events
-      const enhancedEvents = [];
-      let callIdCounter = 1;
-      
-      for (const event of events) {
-        enhancedEvents.push(event);
-        
-        // Look for trace group events that are human actions
-        if (event.type === 'before' && event.class === 'Tracing' && event.method === 'tracingGroup' && 
-            event.params && event.params.title && event.params.title.startsWith('Human ')) {
-          
-          console.log('🎯 Found human action trace group:', event.params.title);
-          
-          // Extract action details from title
-          const title = event.params.title;
-          const actionMatch = title.match(/Human (\w+)(?:\s+on\s+(.+))?/);
-          if (actionMatch) {
-            const [, actionName, selector] = actionMatch;
-            
-            // Create a corresponding Locator event right after the trace group
-            const callId = `human_${actionName}_${Date.now()}_${callIdCounter++}`;
-            const locatorEvent = {
-              type: 'before',
-              callId: callId,
-              startTime: event.startTime || performance.now(),
-              class: 'Locator',  // This is what enables element highlighting!
-              method: actionName.toLowerCase(),
-              params: {
-                selector: selector || `internal:text="${actionName}"i`,
-                ...(selector && { selector }),
-              },
-              pageId: event.pageId || 'unknown',
-              beforeSnapshot: event.beforeSnapshot || `before@${callId}`
-            };
-            
-            enhancedEvents.push(locatorEvent);
-            
-            // Add corresponding 'after' event
-            const afterEvent = {
-              type: 'after',
-              callId: callId,
-              endTime: (event.startTime || performance.now()) + 1,
-              result: null
-            };
-            
-            enhancedEvents.push(afterEvent);
-            
-            console.log('✅ Created Locator event for:', actionName, selector);
-          }
-        }
-      }
-      
-      // Write enhanced trace back to ZIP
-      console.log('📝 Writing enhanced trace file...');
-      const newZipFile = new yazl.ZipFile();
-      
-      // Add all original entries except trace.trace
-      for (const [fileName, content] of entries) {
-        if (fileName !== 'trace.trace') {
-          newZipFile.addBuffer(content, fileName);
-        }
-      }
-      
-      // Add enhanced trace.trace
-      const enhancedTraceContent = enhancedEvents.map(event => JSON.stringify(event)).join('\n');
-      newZipFile.addBuffer(Buffer.from(enhancedTraceContent), 'trace.trace');
-      
-      // Write to temporary file first, then replace original
-      const tempPath = traceFilePath + '.tmp';
-      newZipFile.outputStream.pipe(fs.createWriteStream(tempPath));
-      newZipFile.end();
-      
-      await new Promise<void>((resolve, reject) => {
-        newZipFile.outputStream.on('close', resolve);
-        newZipFile.outputStream.on('error', reject);
-      });
-      
-      // Replace original with enhanced version
-      fs.renameSync(tempPath, traceFilePath);
-      
-      console.log('✅ Post-processing completed - human actions should now support element highlighting!');
-      return true;
-      
-    } catch (error) {
-      console.log('❌ Post-processing failed:', error);
-      return false;
-    }
-  }
-
 
   private _mapActionToMethod(actionName: string): string {
     const methodMap: Record<string, string> = {
