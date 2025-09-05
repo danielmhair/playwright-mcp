@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Comprehensive test for the dual-output human action recording system
- * Tests both Playwright trace generation and enhanced session logging
+ * Test for human action recording system with custom action names
+ * Tests Playwright trace generation with element highlighting support
  */
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -25,7 +25,7 @@ async function startBrowserRecordingSession() {
 
   try {
     await client.connect(transport);
-    console.log('✅ Connected to MCP server with dual recording enabled');
+    console.log('✅ Connected to MCP server with user action recording enabled');
 
     // Test 1: Verify tools are available
     console.log('🔧 Testing tool availability...');
@@ -65,13 +65,14 @@ async function startBrowserRecordingSession() {
     console.log('👤 Interact with the browser!');
     await waitForEnter()
 
-    console.log('🏁 Ending session and testing dual outputs...');
+    console.log('🏁 Ending session and testing trace generation...');
     
     const endResult = await client.callTool({
       name: 'browser_end_user_session',
       arguments: { 
         filename: 'dual-output-test',
-        closeAfter: false
+        closeAfter: false,
+        actionName: 'User Click' // Custom name instead of "Bounding box"
       }
     });
 
@@ -112,7 +113,7 @@ async function startBrowserRecordingSession() {
     console.error('❌ Test error:', error.message);
   } finally {
     await client.close();
-    console.log('\n✅ Dual output system test completed!');
+    console.log('\n✅ User action recording test completed!');
   }
 }
 

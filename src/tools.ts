@@ -30,7 +30,6 @@ import screenshot from './tools/screenshot.js';
 import wait from './tools/wait.js';
 import mouse from './tools/mouse.js';
 import userSession from './tools/userSession.js';
-import traceViewer from './tools/traceViewer.js';
 
 import type { Tool } from './tools/tool.js';
 import type { FullConfig } from './config.js';
@@ -51,7 +50,6 @@ export const allTools: Tool<any>[] = [
   ...snapshot,
   ...tabs,
   ...userSession,
-  ...traceViewer,
   ...wait,
 ];
 
