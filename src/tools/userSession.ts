@@ -41,16 +41,12 @@ export const browserStartUserSession = defineTool({
 
     if (params.enableTracing && (context.config.saveTrace || context.config.saveTraceWithUserActions)) {
       try {
-        // Add marker to trace indicating user session started
-        const browserContext = await context._getBrowserContextForTracing();
-        if (browserContext) {
-          await browserContext.tracing.group('User Session Started', {
-            location: { file: 'user-session' }
-          });
-          await browserContext.tracing.groupEnd();
-        }
+        // Initialize session segment manager for file-based action storage
+        const sessionDir = path.join(context.config.browser.launchOptions.tracesDir || 'playwright-mcp-output', `session-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+        await context.initializeSessionSegmentManager(sessionDir);
+        response.addResult(`📁 Session directory: ${sessionDir}`);
       } catch (error) {
-        response.addError(`Failed to add trace marker: ${error}`);
+        response.addError(`Failed to initialize session recording: ${error}`);
         return;
       }
     }
@@ -112,32 +108,33 @@ export const browserEndUserSession = defineTool({
 
       let traceFile: string | undefined;
 
-      // Generate trace file if tracing is enabled
+      // Finalize session and get all processed trace files
       if (context.config.saveTrace || context.config.saveTraceWithUserActions) {
         try {
-          const traceName = params.filename || `user-session-${Date.now()}`;
-          traceFile = await context.createUserSessionTrace(traceName);
+          const traceFiles = await context.finalizeSession();
 
-          if (traceFile && fs.existsSync(traceFile)) {
-            // POST-PROCESS TRACE FILE: Rename "Bounding box" entries to custom action name
-            const postProcessed = await context.postProcessTraceFile(traceFile, params.actionName);
-            const statusMessage = postProcessed
-              ? `User session trace saved with custom action names ("${params.actionName}")`
-              : 'User session trace saved (post-processing failed)';
+          if (traceFiles.length > 0) {
+            response.addResult(`✅ Session completed with ${traceFiles.length} segment(s):`);
 
-            response.addResult(`${statusMessage}: ${traceFile}`);
+            for (const [index, traceFilePath] of traceFiles.entries()) {
+              if (fs.existsSync(traceFilePath)) {
+                const segmentName = `Segment ${index + 1}`;
+                response.addResult(`📁 ${segmentName}: ${traceFilePath}`);
 
-            // TEMPORARILY DISABLED: Skip adding trace file to MCP response to isolate Zod recursion
-            // const traceData = await fs.promises.readFile(traceFile);
-            // response.addImage({
-            //   data: traceData,
-            //   contentType: 'application/zip',
-            // });
+                response.addImage({
+                  contentType: 'application/zip',
+                  data: fs.readFileSync(traceFilePath)
+                });
+              }
+            }
+
+            response.addResult('');
+            response.addResult('🎯 Each trace file contains enhanced human actions with proper names!');
           } else {
-            response.addResult('Trace file was not created or is not accessible.');
+            response.addError('No trace files were generated');
           }
-        } catch (error) {
-          response.addError(`Failed to create trace file: ${error}`);
+        } catch (sessionError) {
+          response.addError(`Failed to finalize session: ${sessionError}`);
         }
       }
 

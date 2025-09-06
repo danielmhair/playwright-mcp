@@ -15,6 +15,7 @@
  */
 
 import path from 'path';
+import fs from 'fs/promises';
 import debug from 'debug';
 import * as playwright from 'playwright';
 
@@ -28,6 +29,153 @@ import type * as actions from './actions.js';
 import type { Action, SessionLog } from './sessionLog.js';
 
 const testDebug = debug('pw:mcp:test');
+
+// Action data interface for file storage
+interface ActionData {
+  timestamp: number;
+  callId: string;
+  action: {
+    name: string;
+    selector: string;
+    text?: string;
+    key?: string;
+    url?: string;
+  };
+}
+
+// Session segment management
+interface SessionSegment {
+  number: number;
+  traceFile: string;
+  actionFile: string;
+  actionCount: number;
+}
+
+// ActionFileWriter for persistent action storage
+class ActionFileWriter {
+  private fileHandle: fs.FileHandle | undefined;
+  private filePath: string;
+
+  constructor(filePath: string) {
+    this.filePath = filePath;
+  }
+
+  async open(): Promise<void> {
+    // Ensure directory exists
+    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+    this.fileHandle = await fs.open(this.filePath, 'a');
+  }
+
+  async append(action: ActionData): Promise<void> {
+    if (!this.fileHandle)
+      throw new Error('ActionFileWriter not opened');
+
+    const line = JSON.stringify(action) + '\n';
+    await this.fileHandle.write(line);
+  }
+
+  async close(): Promise<void> {
+    if (this.fileHandle) {
+      await this.fileHandle.close();
+      this.fileHandle = undefined;
+    }
+  }
+}
+
+// SessionSegmentManager for handling rotation
+class SessionSegmentManager {
+  private sessionDir: string;
+  private currentSegment: SessionSegment;
+  private actionWriter: ActionFileWriter | undefined;
+  private readonly MAX_ACTIONS_PER_SEGMENT = 75;
+
+  constructor(sessionDir: string) {
+    this.sessionDir = sessionDir;
+    this.currentSegment = {
+      number: 1,
+      traceFile: path.join(sessionDir, 'traces', 'trace-001.zip'),
+      actionFile: path.join(sessionDir, 'actions', 'actions-001.jsonl'),
+      actionCount: 0
+    };
+  }
+
+  async initialize(): Promise<void> {
+    // Ensure directories exist
+    await fs.mkdir(path.join(this.sessionDir, 'traces'), { recursive: true });
+    await fs.mkdir(path.join(this.sessionDir, 'actions'), { recursive: true });
+
+    // Initialize action writer
+    this.actionWriter = new ActionFileWriter(this.currentSegment.actionFile);
+    await this.actionWriter.open();
+  }
+
+  async recordAction(action: ActionData): Promise<void> {
+    if (!this.actionWriter)
+      throw new Error('SessionSegmentManager not initialized');
+
+
+    await this.actionWriter.append(action);
+    this.currentSegment.actionCount++;
+  }
+
+  shouldRotate(): boolean {
+    return this.currentSegment.actionCount >= this.MAX_ACTIONS_PER_SEGMENT;
+  }
+
+  async rotateSegment(browserContext: playwright.BrowserContext): Promise<SessionSegment> {
+    // Close current action writer
+    if (this.actionWriter)
+      await this.actionWriter.close();
+
+
+    // Stop current trace
+    await browserContext.tracing.stop({ path: this.currentSegment.traceFile });
+
+    // Create new segment
+    const newSegmentNumber = this.currentSegment.number + 1;
+    const completedSegment = { ...this.currentSegment };
+
+    this.currentSegment = {
+      number: newSegmentNumber,
+      traceFile: path.join(this.sessionDir, 'traces', `trace-${newSegmentNumber.toString().padStart(3, '0')}.zip`),
+      actionFile: path.join(this.sessionDir, 'actions', `actions-${newSegmentNumber.toString().padStart(3, '0')}.jsonl`),
+      actionCount: 0
+    };
+
+    // Start new trace
+    await browserContext.tracing.start({
+      name: `trace-${newSegmentNumber}`,
+      screenshots: true,
+      snapshots: true,
+      sources: true
+    });
+
+    // Initialize new action writer
+    this.actionWriter = new ActionFileWriter(this.currentSegment.actionFile);
+    await this.actionWriter.open();
+
+    console.log(`🔄 Rotated to segment ${newSegmentNumber} after ${completedSegment.actionCount} actions`);
+
+    return completedSegment;
+  }
+
+  getCurrentSegment(): SessionSegment {
+    return { ...this.currentSegment };
+  }
+
+  async finalize(browserContext: playwright.BrowserContext): Promise<SessionSegment[]> {
+    // Close current action writer
+    if (this.actionWriter)
+      await this.actionWriter.close();
+
+
+    // Stop final trace
+    await browserContext.tracing.stop({ path: this.currentSegment.traceFile });
+
+    // Return all segments (for now just the final one, but this can be extended)
+    return [this.currentSegment];
+  }
+}
 
 export class Context {
   readonly tools: Tool[];
@@ -44,6 +192,7 @@ export class Context {
   private _inputRecorder: InputRecorder | undefined;
   private _sessionLog: SessionLog | undefined;
   private _userSessionActive: boolean = false;
+  private _sessionSegmentManager: SessionSegmentManager | undefined;
 
   constructor(tools: Tool[], config: FullConfig, browserContextFactory: BrowserContextFactory, sessionLog: SessionLog | undefined) {
     this.tools = tools;
@@ -164,6 +313,49 @@ export class Context {
 
   isUserSessionActive(): boolean {
     return this._userSessionActive;
+  }
+
+  async initializeSessionSegmentManager(sessionDir: string): Promise<void> {
+    if (this._sessionSegmentManager)
+      throw new Error('Session segment manager already initialized');
+
+
+    this._sessionSegmentManager = new SessionSegmentManager(sessionDir);
+    await this._sessionSegmentManager.initialize();
+
+    // Start initial tracing
+    const { browserContext } = await this._ensureBrowserContext();
+    await browserContext.tracing.start({
+      name: 'trace-001',
+      screenshots: true,
+      snapshots: true,
+      sources: true
+    });
+
+    console.log('📁 Initialized session segment manager:', sessionDir);
+  }
+
+  async finalizeSession(): Promise<string[]> {
+    if (!this._sessionSegmentManager)
+      throw new Error('No session segment manager to finalize');
+
+
+    const { browserContext } = await this._ensureBrowserContext();
+    const segments = await this._sessionSegmentManager.finalize(browserContext);
+
+    // Process all segments
+    const processedTraces: string[] = [];
+    for (const segment of segments) {
+      const actionData = await this._loadActionData(segment.actionFile);
+      const processedTrace = await this.postProcessTraceFileWithActions(segment.traceFile, actionData);
+      if (processedTrace)
+        processedTraces.push(processedTrace);
+    }
+
+    this._sessionSegmentManager = undefined;
+    console.log(`✅ Finalized session with ${segments.length} segment(s)`);
+
+    return processedTraces;
   }
 
   async flushInputRecorder(): Promise<void> {
@@ -428,7 +620,7 @@ export class Context {
     const { browserContext } = result;
     await this._setupRequestInterception(browserContext);
     if (this._sessionLog)
-      this._inputRecorder = await InputRecorder.create(this._sessionLog, browserContext);
+      this._inputRecorder = await InputRecorder.create(this._sessionLog, browserContext, this);
     for (const page of browserContext.pages())
       this._onPageCreated(page);
     browserContext.on('page', page => this._onPageCreated(page));
@@ -442,125 +634,8 @@ export class Context {
     }
     return result;
   }
-}
 
-export class InputRecorder {
-  private _actions: Action[] = [];
-  private _enabled = false;
-  private _sessionLog: SessionLog;
-  private _browserContext: playwright.BrowserContext;
-  private _flushTimer: NodeJS.Timeout | undefined;
-
-  private constructor(sessionLog: SessionLog, browserContext: playwright.BrowserContext) {
-    this._sessionLog = sessionLog;
-    this._browserContext = browserContext;
-  }
-
-  static async create(sessionLog: SessionLog, browserContext: playwright.BrowserContext) {
-    const recorder = new InputRecorder(sessionLog, browserContext);
-    await recorder._initialize();
-    await recorder.setEnabled(true);
-    return recorder;
-  }
-
-  private async _initialize() {
-    await (this._browserContext as any)._enableRecorder({
-      mode: 'recording',
-      recorderMode: 'api',
-    }, {
-      actionAdded: (page: playwright.Page, data: actions.ActionInContext, code: string) => {
-        if (!this._enabled)
-          return;
-
-        // DEBUG: Log everything we receive from Playwright recorder
-        console.log('🐛 DEBUG actionAdded - Raw data from Playwright:', {
-          'data.action': data.action,
-          'data.action.name': data.action?.name,
-          'data.action.selector': ('selector' in data.action) ? data.action.selector : undefined,
-          'data.frame': data.frame,
-          'data.startTime': data.startTime,
-          'data.endTime': data.endTime,
-          'code': code.trim(),
-          'page.url': page.url()
-        });
-
-        const tab = Tab.forPage(page);
-        this._actions.push({ ...data, tab, code: code.trim(), timestamp: performance.now() });
-        // Record human action with trace group and snapshot
-        void this._recordHumanAction(data.action.name || code.trim(), page, data);
-        this._scheduleFlush();
-      },
-      actionUpdated: (page: playwright.Page, data: actions.ActionInContext, code: string) => {
-        if (!this._enabled)
-          return;
-
-        // DEBUG: Log everything we receive from Playwright recorder
-        console.log('🐛 DEBUG actionUpdated - Raw data from Playwright:', {
-          'data.action': data.action,
-          'data.action.name': data.action?.name,
-          'data.action.selector': ('selector' in data.action) ? data.action.selector : undefined,
-          'data.frame': data.frame,
-          'data.startTime': data.startTime,
-          'data.endTime': data.endTime,
-          'code': code.trim(),
-          'page.url': page.url()
-        });
-
-        const tab = Tab.forPage(page);
-        this._actions[this._actions.length - 1] = { ...data, tab, code: code.trim(), timestamp: performance.now() };
-        // Record human action with trace group and snapshot
-        void this._recordHumanAction(data.action.name || code.trim(), page, data);
-        this._scheduleFlush();
-      },
-      signalAdded: (page: playwright.Page, data: actions.SignalInContext) => {
-        if (data.signal.name !== 'navigation')
-          return;
-        const tab = Tab.forPage(page);
-        this._actions.push({
-          frame: data.frame,
-          action: {
-            name: 'navigate',
-            url: data.signal.url,
-            signals: [],
-          },
-          startTime: data.timestamp,
-          endTime: data.timestamp,
-          tab,
-          code: `await page.goto('${data.signal.url}');`,
-          timestamp: performance.now(),
-        });
-        void this._recordHumanAction(`await page.goto('${data.signal.url}');`, page, data);
-        this._scheduleFlush();
-      },
-    });
-  }
-
-  async setEnabled(enabled: boolean) {
-    this._enabled = enabled;
-    if (!enabled)
-      await this._flush();
-  }
-
-  private _clearTimer() {
-    if (this._flushTimer) {
-      clearTimeout(this._flushTimer);
-      this._flushTimer = undefined;
-    }
-  }
-
-  private _scheduleFlush() {
-    this._clearTimer();
-    this._flushTimer = setTimeout(() => this._flush(), 1000);
-  }
-
-  private async _flush() {
-    this._clearTimer();
-    const actions = this._actions;
-    this._actions = [];
-    await this._sessionLog.logActions(actions);
-  }
-
-  private async _recordHumanAction(title: string, page?: playwright.Page, actionData?: any) {
+  async _recordHumanAction(title: string, page?: playwright.Page, actionData?: any) {
     // Execute boundingBox to trigger frame-snapshots - this gets us 80% there when trace is made without distrupting the user's actions
     // This generates proper "Bounding box" entries in trace viewer with element selectors
     // and creates frame-snapshots that capture HTML resources
@@ -605,15 +680,189 @@ export class InputRecorder {
         }
       }
 
+      // Record action data if session segment manager is active
+      if (this._sessionSegmentManager && this._userSessionActive) {
+        const recordActionData: ActionData = {
+          timestamp: performance.now(),
+          callId: actionData?.callId || `manual-${Date.now()}`,
+          action: {
+            name: detectedActionType || 'unknown',
+            selector: action.selector || '',
+            text: action.text,
+            key: action.key,
+            url: action.url
+          }
+        };
+
+        await this._sessionSegmentManager.recordAction(recordActionData);
+        console.log(`📝 Recorded action: ${detectedActionType} (${this._sessionSegmentManager.getCurrentSegment().actionCount} actions in current segment)`);
+
+        // Check if rotation is needed
+        if (this._sessionSegmentManager.shouldRotate()) {
+          const { browserContext } = await this._ensureBrowserContext();
+          await this._sessionSegmentManager.rotateSegment(browserContext);
+        }
+      }
+
     } catch (error) {
       console.log('❌ Failed to record human action:', error);
+    }
+  }
+
+  // Load action data from JSONL file
+  private async _loadActionData(actionFilePath: string): Promise<ActionData[]> {
+    try {
+      const content = await fs.readFile(actionFilePath, 'utf8');
+      const lines = content.split('\n').filter(line => line.trim());
+      return lines.map(line => JSON.parse(line));
+    } catch (error) {
+      console.log(`⚠️ Could not load action data from ${actionFilePath}:`, error);
+      return [];
+    }
+  }
+
+  // Enhanced post-processing with action data
+  private async postProcessTraceFileWithActions(traceFilePath: string, actionData: ActionData[]): Promise<string | undefined> {
+    if (!actionData.length) {
+      console.log('⚠️ No action data provided, skipping post-processing');
+      return traceFilePath;
+    }
+
+    try {
+      console.log(`📝 Post-processing trace file with ${actionData.length} actions`);
+
+      // Create action lookup by timestamp and selector for faster matching
+      const actionLookup = new Map<string, ActionData>();
+      for (const action of actionData) {
+        const key = `${action.action.selector}-${Math.floor(action.timestamp / 1000)}`;
+        actionLookup.set(key, action);
+      }
+
+      // Process trace file (similar to existing postProcessTraceFile but with action correlation)
+      const yauzl = await import('yauzl');
+      const yazl = await import('yazl');
+
+      const entries = new Map<string, Buffer>();
+
+      await new Promise<void>((resolve, reject) => {
+        yauzl.open(traceFilePath, { lazyEntries: true }, (err, zipFile) => {
+          if (err)
+            return reject(err);
+
+          zipFile!.readEntry();
+          zipFile!.on('entry', entry => {
+            if (entry.fileName.endsWith('/')) {
+              zipFile!.readEntry();
+              return;
+            }
+
+            zipFile!.openReadStream(entry, (err, readStream) => {
+              if (err)
+                return reject(err);
+
+              const chunks: Buffer[] = [];
+              readStream!.on('data', chunk => chunks.push(chunk));
+              readStream!.on('end', () => {
+                entries.set(entry.fileName, Buffer.concat(chunks));
+                zipFile!.readEntry();
+              });
+            });
+          });
+          zipFile!.on('end', resolve);
+          zipFile!.on('error', reject);
+        });
+      });
+
+      // Process trace.trace file with action correlation
+      const traceData = entries.get('trace.trace');
+      if (!traceData) {
+        console.log('❌ No trace.trace file found in ZIP');
+        return traceFilePath;
+      }
+
+      const traceLines = traceData.toString().split('\n').filter(line => line.trim());
+      const events = traceLines.map(line => JSON.parse(line));
+
+      let enhancedCount = 0;
+      const modifiedEvents = events.map((event: any) => {
+        if (event.type === 'before' && event.title === 'Bounding box') {
+          // Find matching action data
+          const selector = event.params?.selector || '';
+          const timestamp = event.startTime;
+          const lookupKey = `${selector}-${Math.floor(timestamp / 1000)}`;
+          const matchingAction = actionLookup.get(lookupKey);
+
+          if (matchingAction) {
+            enhancedCount++;
+            const actionName = matchingAction.action.name;
+
+            console.log(`🎯 Enhanced "Bounding box" entry to "${actionName}"`);
+
+            // Create proper Playwright action event
+            return {
+              type: 'before',
+              callId: event.callId,
+              startTime: event.startTime,
+              title: this._generateActionDescription(matchingAction.action, actionName),
+              class: 'Frame',
+              method: actionName,
+              params: {
+                selector: selector,
+                strict: event.params?.strict || true,
+                timeout: event.params?.timeout || 0,
+                ...(actionName === 'fill' && matchingAction.action.text ? { value: matchingAction.action.text } : {}),
+                ...(actionName === 'press' && matchingAction.action.key ? { key: matchingAction.action.key } : {}),
+              },
+              stepId: `human@${enhancedCount}`,
+              pageId: event.pageId,
+              beforeSnapshot: event.beforeSnapshot,
+              humanAction: true
+            };
+          }
+        }
+        return event;
+      });
+
+      // Overwrite trace.trace in entries map
+      const modifiedTraceContent = modifiedEvents.map(event => JSON.stringify(event)).join('\n');
+      entries.set('trace.trace', Buffer.from(modifiedTraceContent));
+
+      // Also save standalone trace file
+      const traceDir = path.dirname(traceFilePath);
+      const standaloneTracePath = path.join(traceDir, 'trace.trace');
+      await fs.writeFile(standaloneTracePath, modifiedTraceContent);
+
+      // Create new ZIP with enhanced trace
+      const newZipFile = new yazl.ZipFile();
+      for (const [fileName, content] of entries)
+        newZipFile.addBuffer(content, fileName);
+
+
+      const tempPath = traceFilePath + '.tmp';
+      newZipFile.outputStream.pipe((await import('fs')).createWriteStream(tempPath));
+      newZipFile.end();
+
+      await new Promise<void>((resolve, reject) => {
+        newZipFile.outputStream.on('close', resolve);
+        newZipFile.outputStream.on('error', reject);
+      });
+
+      // Replace original with enhanced version
+      await fs.rename(tempPath, traceFilePath);
+
+      console.log(`✅ Enhanced trace file with ${enhancedCount} human actions!`);
+      return traceFilePath;
+
+    } catch (error) {
+      console.log('❌ Post-processing failed:', error);
+      return traceFilePath;
     }
   }
 
   private _generateActionDescription(action: any, actionType?: string): string {
     const actionName = actionType || action.name || 'interact';
     const selector = action.selector || '';
-    
+
     // Generate action-specific descriptions with context
     switch (actionName.toLowerCase()) {
       case 'click':
@@ -636,95 +885,169 @@ export class InputRecorder {
   }
 
   private _parseElementFromSelector(selector: string): string {
-    if (!selector) return 'element';
-    
+    if (!selector)
+      return 'element';
+
     // Handle internal role selectors
     if (selector.includes('internal:role=')) {
       const roleMatch = selector.match(/internal:role=([\w]+)(?:\[name="([^"]+)"\])?/);
       if (roleMatch) {
         const role = roleMatch[1];
         const name = roleMatch[2];
-        if (name) {
+        if (name)
           return `${name} ${role}`;
-        }
+
         return role;
       }
     }
-    
+
     // Handle internal text selectors
     if (selector.includes('internal:text=')) {
       const textMatch = selector.match(/internal:text="([^"]+)"/);
-      if (textMatch) {
+      if (textMatch)
         return `"${textMatch[1]}" element`;
-      }
+
     }
-    
+
     // Handle placeholder selectors
     if (selector.includes('placeholder=')) {
       const placeholderMatch = selector.match(/placeholder="([^"]+)"/);
-      if (placeholderMatch) {
+      if (placeholderMatch)
         return `${placeholderMatch[1]} field`;
-      }
+
     }
-    
+
     // Fallback to generic descriptions
-    if (selector.includes('input')) return 'input field';
-    if (selector.includes('button')) return 'button';
-    if (selector.includes('checkbox')) return 'checkbox';
-    if (selector.includes('combobox')) return 'combobox';
-    
+    if (selector.includes('input'))
+      return 'input field';
+    if (selector.includes('button'))
+      return 'button';
+    if (selector.includes('checkbox'))
+      return 'checkbox';
+    if (selector.includes('combobox'))
+      return 'combobox';
+
     return 'element';
   }
+}
 
-  private _buildTraceParams(action: any, selector: string): Record<string, any> {
-    const params: Record<string, any> = {
-      selector: selector
-    };
+export class InputRecorder {
+  private _actions: Action[] = [];
+  private _enabled = false;
+  private _sessionLog: SessionLog;
+  private _browserContext: playwright.BrowserContext;
+  private _flushTimer: NodeJS.Timeout | undefined;
+  private _context: Context;
 
-    try {
-      // Add action-specific parameters with safety checks
-      if (action.text && typeof action.text === 'string')
-        params.text = action.text;
-      if (action.button && typeof action.button === 'string')
-        params.button = action.button;
-      if (action.url && typeof action.url === 'string')
-        params.url = action.url;
-      if (action.value && typeof action.value === 'string')
-        params.value = action.value;
-      if (action.key && typeof action.key === 'string')
-        params.key = action.key;
-      if (action.options && Array.isArray(action.options))
-        params.values = action.options;
-      if (action.files && Array.isArray(action.files))
-        params.files = action.files;
-      if (action.modifiers !== undefined)
-        params.modifiers = action.modifiers;
-      if (action.clickCount !== undefined)
-        params.clickCount = action.clickCount;
-      if (action.position)
-        params.position = action.position;
-    } catch (error) {
-      testDebug('Error building trace params:', error);
+  private constructor(sessionLog: SessionLog, browserContext: playwright.BrowserContext, context: Context) {
+    this._sessionLog = sessionLog;
+    this._browserContext = browserContext;
+    this._context = context;
+  }
+
+  static async create(sessionLog: SessionLog, browserContext: playwright.BrowserContext, context: Context) {
+    const recorder = new InputRecorder(sessionLog, browserContext, context);
+    await recorder._initialize();
+    await recorder.setEnabled(true);
+    return recorder;
+  }
+
+  private async _initialize() {
+    await (this._browserContext as any)._enableRecorder({
+      mode: 'recording',
+      recorderMode: 'api',
+    }, {
+      actionAdded: (page: playwright.Page, data: actions.ActionInContext, code: string) => {
+        if (!this._enabled)
+          return;
+
+        // DEBUG: Log everything we receive from Playwright recorder
+        console.log('🐛 DEBUG actionAdded - Raw data from Playwright:', {
+          'data.action': data.action,
+          'data.action.name': data.action?.name,
+          'data.action.selector': ('selector' in data.action) ? data.action.selector : undefined,
+          'data.frame': data.frame,
+          'data.startTime': data.startTime,
+          'data.endTime': data.endTime,
+          'code': code.trim(),
+          'page.url': page.url()
+        });
+
+        const tab = Tab.forPage(page);
+        this._actions.push({ ...data, tab, code: code.trim(), timestamp: performance.now() });
+        // Record human action with trace group and snapshot
+        void this._context._recordHumanAction(data.action.name || code.trim(), page, data);
+        this._scheduleFlush();
+      },
+      actionUpdated: (page: playwright.Page, data: actions.ActionInContext, code: string) => {
+        if (!this._enabled)
+          return;
+
+        // DEBUG: Log everything we receive from Playwright recorder
+        console.log('🐛 DEBUG actionUpdated - Raw data from Playwright:', {
+          'data.action': data.action,
+          'data.action.name': data.action?.name,
+          'data.action.selector': ('selector' in data.action) ? data.action.selector : undefined,
+          'data.frame': data.frame,
+          'data.startTime': data.startTime,
+          'data.endTime': data.endTime,
+          'code': code.trim(),
+          'page.url': page.url()
+        });
+
+        const tab = Tab.forPage(page);
+        this._actions[this._actions.length - 1] = { ...data, tab, code: code.trim(), timestamp: performance.now() };
+        // Record human action with trace group and snapshot
+        void this._context._recordHumanAction(data.action.name || code.trim(), page, data);
+        this._scheduleFlush();
+      },
+      signalAdded: (page: playwright.Page, data: actions.SignalInContext) => {
+        if (data.signal.name !== 'navigation')
+          return;
+        const tab = Tab.forPage(page);
+        this._actions.push({
+          frame: data.frame,
+          action: {
+            name: 'navigate',
+            url: data.signal.url,
+            signals: [],
+          },
+          startTime: data.timestamp,
+          endTime: data.timestamp,
+          tab,
+          code: `await page.goto('${data.signal.url}');`,
+          timestamp: performance.now(),
+        });
+        void this._context._recordHumanAction(`await page.goto('${data.signal.url}');`, page, data);
+        this._scheduleFlush();
+      },
+    });
+  }
+
+  async setEnabled(enabled: boolean) {
+    this._enabled = enabled;
+    if (!enabled)
+      await this._flush();
+  }
+
+  private _clearTimer() {
+    if (this._flushTimer) {
+      clearTimeout(this._flushTimer);
+      this._flushTimer = undefined;
     }
+  }
 
-    return params;
+  private _scheduleFlush() {
+    this._clearTimer();
+    this._flushTimer = setTimeout(() => this._flush(), 1000);
+  }
+
+  private async _flush() {
+    this._clearTimer();
+    const actions = this._actions;
+    this._actions = [];
+    await this._sessionLog.logActions(actions);
   }
 
 
-  private async _writeToTrace(event: any): Promise<void> {
-    try {
-      // Use browser context's tracing to write event directly
-      // This leverages Playwright's internal tracing mechanism
-      const contextInternal = this._browserContext as any;
-      if (contextInternal._tracing && contextInternal._tracing._writeEvent) {
-        testDebug('✅ Writing event to trace:', event.type, event.class, event.method);
-        await contextInternal._tracing._writeEvent(event);
-        testDebug('✅ Event written to trace successfully');
-      } else {
-        testDebug('❌ Direct trace writing not available - no _tracing or _writeEvent');
-      }
-    } catch (error) {
-      testDebug('❌ Failed to write to trace:', error);
-    }
-  }
 }

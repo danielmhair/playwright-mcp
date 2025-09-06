@@ -72,15 +72,16 @@ async function startBrowserRecordingSession() {
 
     const endText = endResult.content[0].text;
     
-    const traceMatch = endText.match(/📦 Playwright trace\.zip: (.+)/);
-    if (traceMatch) {
-      const traceFile = traceMatch[1];
+    // Look for segment trace files in the new format: 📁 Segment 1: /path/to/trace-1.zip
+    const segmentMatch = endText.match(/📁 Segment \d+: (.+\.zip)/);
+    if (segmentMatch) {
+      const traceFile = segmentMatch[1];
       if (fs.existsSync(traceFile)) {
         const stats = fs.statSync(traceFile);
-        console.log(`📁 Trace file exists: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
+        console.log(`📁 First trace segment exists: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
         
-        // Automatically open Playwright trace viewer
-        console.log('🎭 Opening Playwright trace viewer...');
+        // Automatically open Playwright trace viewer for the first segment
+        console.log('🎭 Opening Playwright trace viewer for first segment...');
         
         const traceViewer = spawn('npx', ['playwright', 'show-trace', traceFile], {
           stdio: 'inherit',
@@ -92,9 +93,22 @@ async function startBrowserRecordingSession() {
         traceViewer.unref();
         
         console.log(`📊 Trace viewer command: npx playwright show-trace "${traceFile}"`);
+        
+        // Show all available segments
+        const allSegments = endText.match(/📁 Segment \d+: (.+\.zip)/g);
+        if (allSegments && allSegments.length > 1) {
+          console.log(`\n📋 Additional segments available:`);
+          allSegments.slice(1).forEach((segment, index) => {
+            const segmentPath = segment.match(/📁 Segment \d+: (.+\.zip)/)[1];
+            console.log(`   ${index + 2}. ${segmentPath}`);
+          });
+        }
       } else {
-        console.log('❌ Trace file not found at:', traceFile);
+        console.log('❌ First trace segment not found at:', traceFile);
       }
+    } else {
+      console.log('❌ No trace segments found in response');
+      console.log('Response text:', endText);
     }
   } catch (error) {
     console.error(error)
