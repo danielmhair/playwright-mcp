@@ -8,20 +8,16 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import fs from 'fs';
-import readline from 'readline'
-import { spawn } from 'child_process'
+import readline from 'readline';
+import { spawn } from 'child_process';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 
 async function startBrowserRecordingSession() {
   console.log('🎬 Starting Browser Recording Session \n');
 
   const client = new Client({ name: 'browser-recorder', version: '1.0.0' });
   
-  const transport = new StdioClientTransport({
-    command: 'node',
-    args: ['cli.js', '--save-trace-with-user-actions', '--record-user-actions', '--save-session'],
-    cwd: process.cwd(),
-    stdio: ['pipe', 'pipe', 'inherit'], // Allow stderr from server to show in console
-  });
+  const transport = new SSEClientTransport(new URL('http://localhost:3001/sse'))
 
   try {
     await client.connect(transport);

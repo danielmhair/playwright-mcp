@@ -6,25 +6,9 @@
       "type": "node",
       "request": "launch",
       "program": "${workspaceFolder}/cli.js",
-      "console": "integratedTerminal",
       "preLaunchTask": "build",
-      "env": {
-        "DEBUG": "pw:mcp:test",
-        "NODE_OPTIONS": "--enable-source-maps"
-      },
-      "sourceMaps": true,
-      "skipFiles": [
-        "<node_internals>/**"
-      ]
-    },
-    {
-      "name": "Debug MCP Server with Port",
-      "type": "node",
-      "request": "launch",
-      "program": "${workspaceFolder}/cli.js",
       "args": ["--port", "3001", "--save-trace-with-user-actions", "--record-user-actions", "--save-session"],
       "console": "integratedTerminal",
-      "preLaunchTask": "build",
       "env": {
         "DEBUG": "pw:mcp:test",
         "NODE_OPTIONS": "--enable-source-maps"
@@ -35,15 +19,31 @@
       ]
     },
     {
-      "name": "Debug Dual Output connect-only",
+      "name": "Debug Browser Recording Test",
       "type": "node",
       "request": "launch",
-      "program": "${workspaceFolder}/test-dual-output-connect-only.js",
+      "program": "${workspaceFolder}/test-browser-recording.js",
       "console": "integratedTerminal",
-      "preLaunchTask": "build",
       "env": {
-        "DEBUG": "pw:mcp:test"
+        "DEBUG": "pw:mcp:*",
+        "NODE_OPTIONS": "--enable-source-maps"
       },
+      "sourceMaps": true,
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
+    },
+    {
+      "name": "Debug Browser Recording Live Test",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/test-browser-recording-live.js",
+      "console": "integratedTerminal",
+      "env": {
+        "DEBUG": "pw:mcp:*",
+        "NODE_OPTIONS": "--enable-source-maps"
+      },
+      "sourceMaps": true,
       "skipFiles": [
         "<node_internals>/**"
       ]

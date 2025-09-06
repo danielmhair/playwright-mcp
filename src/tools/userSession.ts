@@ -127,12 +127,12 @@ export const browserEndUserSession = defineTool({
 
             response.addResult(`${statusMessage}: ${traceFile}`);
 
-            // Add trace file as image attachment (since Response doesn't have addAttachment)
-            const traceData = await fs.promises.readFile(traceFile);
-            response.addImage({
-              data: traceData,
-              contentType: 'application/zip',
-            });
+            // TEMPORARILY DISABLED: Skip adding trace file to MCP response to isolate Zod recursion
+            // const traceData = await fs.promises.readFile(traceFile);
+            // response.addImage({
+            //   data: traceData,
+            //   contentType: 'application/zip',
+            // });
           } else {
             response.addResult('Trace file was not created or is not accessible.');
           }

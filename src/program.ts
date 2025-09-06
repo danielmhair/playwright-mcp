@@ -86,7 +86,7 @@ program
       if (config.saveTrace || config.saveTraceWithUserActions) {
         const server = await startTraceViewerServer();
         const urlPrefix = server.urlPrefix('human-readable');
-        const traceName = config.saveTraceWithUserActions ? 'user-session-trace' : 'trace';
+        const traceName = 'trace';
         const url = urlPrefix + '/trace/index.html?trace=' + config.browser.launchOptions.tracesDir + `/${traceName}.json`;
         // Use debug logging to avoid corrupting MCP protocol - suppress in MCP mode
         if (process.env.NODE_ENV !== 'mcp') {

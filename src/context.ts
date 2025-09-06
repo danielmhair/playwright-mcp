@@ -228,12 +228,16 @@ export class Context {
         zipFile.on('error', reject);
       });
 
-      // Process trace.trace file
+      // Look for trace.trace file first (where human actions are recorded)
       const traceData = entries.get('trace.trace');
+      const traceFileName = 'trace.trace';
+
       if (!traceData) {
-        console.log('❌ No trace.trace file found in ZIP');
+        console.log('❌ No trace file found in ZIP (checked trace.trace)');
         return false;
       }
+
+      console.log(`📋 Using trace file: ${traceFileName}`);
 
       console.log('🔍 Analyzing trace events to rename "Bounding box" entries...');
       const traceLines = traceData.toString().split('\n').filter((line: string) => line.trim());
@@ -242,15 +246,55 @@ export class Context {
       // Find "Bounding box" events and rename them to custom action name
       let renamedCount = 0;
       const modifiedEvents = events.map((event: any) => {
-        // Look for Locator boundingBox events (these are our human actions)
-        if (event.type === 'before' && event.class === 'Locator' && event.method === 'boundingBox') {
+        // Look for events with title "Bounding box" (our human actions)
+        if (event.type === 'before' && event.title === 'Bounding box') {
           renamedCount++;
           console.log(`🎯 Renaming "Bounding box" entry #${renamedCount} to "${actionName}"`);
 
-          // Change the method name to create a custom entry
+          // Use the recorded action data instead of guessing
+          const selector = event.params?.selector || '';
+          const callId = event.callId;
+
+          // Look up the recorded action data from InputRecorder
+          let recordedAction = null;
+          if (this._inputRecorder) {
+            // Access the recorded actions from InputRecorder
+            const recordedActions = (this._inputRecorder as any)._actions || [];
+            recordedAction = recordedActions.find((action: any) =>
+              action.callId === callId ||
+              (action.action?.selector === selector && Math.abs(action.startTime - event.startTime) < 1000)
+            );
+          }
+
+          // Use recorded action data or fall back to event data
+          const method = recordedAction?.action?.name || event.method || 'click';
+          const params: any = {
+            selector: selector,
+            strict: event.params?.strict || true,
+            timeout: event.params?.timeout || 0
+          };
+
+          // Add specific params based on recorded action type
+          if (recordedAction?.action) {
+            const action = recordedAction.action;
+            if (method === 'fill' && action.text)
+              params.value = action.text;
+            else if (method === 'press' && action.key)
+              params.key = action.key;
+
+          }
+
           return {
-            ...event,
-            method: 'click', // Change to 'click' so it shows as clickable in trace viewer
+            type: 'before',
+            callId: event.callId,
+            startTime: event.startTime,
+            title: actionName, // Custom action name
+            class: 'Frame', // Must be Frame for proper display
+            method: method,
+            params: params,
+            stepId: `human@${renamedCount}`,
+            pageId: event.pageId,
+            beforeSnapshot: event.beforeSnapshot,
             humanAction: true, // Add marker to identify our custom entries
           };
         }
@@ -259,18 +303,23 @@ export class Context {
 
       // Write modified trace back to ZIP
       console.log('📝 Writing modified trace file...');
+      const modifiedTraceContent = modifiedEvents.map((event: any) => JSON.stringify(event)).join('\n');
+
+      // Overwrite the trace.trace file in the entries Map
+      entries.set(traceFileName, Buffer.from(modifiedTraceContent));
+
+      // save the modified trace.trace to disk
+      const traceDir = path.dirname(traceFilePath);
+      const standaloneTracePath = path.join(traceDir, traceFileName);
+      fs.writeFileSync(standaloneTracePath, modifiedTraceContent);
+      console.log(`💾 Saved standalone trace file: ${standaloneTracePath}`);
+
       const newZipFile = new yazl.ZipFile();
 
-      // Add all original entries except trace.trace
-      for (const [fileName, content] of entries) {
-        if (fileName !== 'trace.trace')
-          newZipFile.addBuffer(content, fileName);
+      // Add all entries (including the now-modified trace.trace)
+      for (const [fileName, content] of entries)
+        newZipFile.addBuffer(content, fileName);
 
-      }
-
-      // Add modified trace.trace
-      const modifiedTraceContent = modifiedEvents.map((event: any) => JSON.stringify(event)).join('\n');
-      newZipFile.addBuffer(Buffer.from(modifiedTraceContent), 'trace.trace');
 
       // Write to temporary file first, then replace original
       const tempPath = traceFilePath + '.tmp';
@@ -332,7 +381,7 @@ export class Context {
 
     await promise.then(async ({ browserContext, close }) => {
       if (this.config.saveTrace || this.config.saveTraceWithUserActions) {
-        const traceName = this.config.saveTraceWithUserActions ? 'user-session-trace' : 'trace';
+        const traceName = 'trace';
         const tracePath = path.join(this.config.browser.launchOptions.tracesDir!, `${traceName}.zip`);
         await browserContext.tracing.stop({ path: tracePath });
       } else {
@@ -385,7 +434,7 @@ export class Context {
     browserContext.on('page', page => this._onPageCreated(page));
     if (this.config.saveTrace || this.config.saveTraceWithUserActions) {
       await browserContext.tracing.start({
-        name: this.config.saveTraceWithUserActions ? 'user-session-trace' : 'trace',
+        name: 'trace',
         screenshots: true,
         snapshots: true,
         sources: true,
@@ -422,6 +471,19 @@ export class InputRecorder {
       actionAdded: (page: playwright.Page, data: actions.ActionInContext, code: string) => {
         if (!this._enabled)
           return;
+
+        // DEBUG: Log everything we receive from Playwright recorder
+        console.log('🐛 DEBUG actionAdded - Raw data from Playwright:', {
+          'data.action': data.action,
+          'data.action.name': data.action?.name,
+          'data.action.selector': ('selector' in data.action) ? data.action.selector : undefined,
+          'data.frame': data.frame,
+          'data.startTime': data.startTime,
+          'data.endTime': data.endTime,
+          'code': code.trim(),
+          'page.url': page.url()
+        });
+
         const tab = Tab.forPage(page);
         this._actions.push({ ...data, tab, code: code.trim(), timestamp: performance.now() });
         // Record human action with trace group and snapshot
@@ -431,6 +493,19 @@ export class InputRecorder {
       actionUpdated: (page: playwright.Page, data: actions.ActionInContext, code: string) => {
         if (!this._enabled)
           return;
+
+        // DEBUG: Log everything we receive from Playwright recorder
+        console.log('🐛 DEBUG actionUpdated - Raw data from Playwright:', {
+          'data.action': data.action,
+          'data.action.name': data.action?.name,
+          'data.action.selector': ('selector' in data.action) ? data.action.selector : undefined,
+          'data.frame': data.frame,
+          'data.startTime': data.startTime,
+          'data.endTime': data.endTime,
+          'code': code.trim(),
+          'page.url': page.url()
+        });
+
         const tab = Tab.forPage(page);
         this._actions[this._actions.length - 1] = { ...data, tab, code: code.trim(), timestamp: performance.now() };
         // Record human action with trace group and snapshot
@@ -486,7 +561,7 @@ export class InputRecorder {
   }
 
   private async _recordHumanAction(title: string, page?: playwright.Page, actionData?: any) {
-    // LOCATOR ACTION APPROACH: Execute boundingBox to trigger frame-snapshots
+    // Execute boundingBox to trigger frame-snapshots - this gets us 80% there when trace is made without distrupting the user's actions
     // This generates proper "Bounding box" entries in trace viewer with element selectors
     // and creates frame-snapshots that capture HTML resources
 
@@ -496,10 +571,26 @@ export class InputRecorder {
     try {
       const action = actionData.action;
 
-      console.log('🎯 Recording human action to trigger frame-snapshots:', {
-        actionName: action.name,
-        selector: action.selector || 'unknown'
-      });
+      // Try to parse action type from the generated code if action.name is missing
+      let detectedActionType = action.name;
+      if (!detectedActionType && title) {
+        if (title.includes('.click('))
+          detectedActionType = 'click';
+        else if (title.includes('.fill('))
+          detectedActionType = 'fill';
+        else if (title.includes('.press('))
+          detectedActionType = 'press';
+        else if (title.includes('.check('))
+          detectedActionType = 'check';
+        else if (title.includes('.uncheck('))
+          detectedActionType = 'uncheck';
+        else if (title.includes('.selectOption('))
+          detectedActionType = 'select';
+        else
+          detectedActionType = 'unknown';
+      }
+
+      console.log('🎯 Detected action type:', detectedActionType);
 
       // Execute boundingBox to trigger frame-snapshots - this creates the "Bounding box" entries
       if (action.selector && action.selector !== 'unknown') {
@@ -507,6 +598,8 @@ export class InputRecorder {
         try {
           const box = await locator.boundingBox({ timeout: 1000 });
           console.log('✅ Triggered frame-snapshot via boundingBox - HTML resources captured');
+          console.log('   Action type for trace:', detectedActionType);
+          console.log('   Selector:', action.selector);
         } catch (error) {
           console.log('⚠️ Could not trigger frame-snapshot, selector may be invalid:', action.selector);
         }
@@ -517,18 +610,70 @@ export class InputRecorder {
     }
   }
 
-  private _mapActionToMethod(actionName: string): string {
-    const methodMap: Record<string, string> = {
-      'click': 'click',
-      'fill': 'fill',
-      'press': 'press',
-      'check': 'check',
-      'uncheck': 'uncheck',
-      'select': 'selectOption',
-      'navigate': 'goto',
-      'setInputFiles': 'setInputFiles'
-    };
-    return methodMap[actionName] || 'click';
+  private _generateActionDescription(action: any, actionType?: string): string {
+    const actionName = actionType || action.name || 'interact';
+    const selector = action.selector || '';
+    
+    // Generate action-specific descriptions with context
+    switch (actionName.toLowerCase()) {
+      case 'click':
+        return `Click ${this._parseElementFromSelector(selector)}`;
+      case 'fill':
+        const fillText = action.text || 'text';
+        return `Fill "${fillText}" into ${this._parseElementFromSelector(selector)}`;
+      case 'press':
+        const key = action.key || 'key';
+        return `Press "${key}" in ${this._parseElementFromSelector(selector)}`;
+      case 'check':
+        return `Check ${this._parseElementFromSelector(selector)}`;
+      case 'uncheck':
+        return `Uncheck ${this._parseElementFromSelector(selector)}`;
+      case 'select':
+        return `Select option in ${this._parseElementFromSelector(selector)}`;
+      default:
+        return `${actionName} ${this._parseElementFromSelector(selector)}`.trim();
+    }
+  }
+
+  private _parseElementFromSelector(selector: string): string {
+    if (!selector) return 'element';
+    
+    // Handle internal role selectors
+    if (selector.includes('internal:role=')) {
+      const roleMatch = selector.match(/internal:role=([\w]+)(?:\[name="([^"]+)"\])?/);
+      if (roleMatch) {
+        const role = roleMatch[1];
+        const name = roleMatch[2];
+        if (name) {
+          return `${name} ${role}`;
+        }
+        return role;
+      }
+    }
+    
+    // Handle internal text selectors
+    if (selector.includes('internal:text=')) {
+      const textMatch = selector.match(/internal:text="([^"]+)"/);
+      if (textMatch) {
+        return `"${textMatch[1]}" element`;
+      }
+    }
+    
+    // Handle placeholder selectors
+    if (selector.includes('placeholder=')) {
+      const placeholderMatch = selector.match(/placeholder="([^"]+)"/);
+      if (placeholderMatch) {
+        return `${placeholderMatch[1]} field`;
+      }
+    }
+    
+    // Fallback to generic descriptions
+    if (selector.includes('input')) return 'input field';
+    if (selector.includes('button')) return 'button';
+    if (selector.includes('checkbox')) return 'checkbox';
+    if (selector.includes('combobox')) return 'combobox';
+    
+    return 'element';
   }
 
   private _buildTraceParams(action: any, selector: string): Record<string, any> {
