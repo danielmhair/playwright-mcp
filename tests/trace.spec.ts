@@ -33,5 +33,5 @@ test('check that trace is saved', async ({ startClient, server, mcpMode }, testI
     code: expect.stringContaining(`page.goto('http://localhost`),
   });
 
-  expect(fs.existsSync(path.join(outputDir, 'traces', 'trace.trace'))).toBeTruthy();
+  expect(fs.existsSync(path.join(outputDir, 'traces', 'trace.zip'))).toBeTruthy();
 });

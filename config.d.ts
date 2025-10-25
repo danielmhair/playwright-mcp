@@ -96,6 +96,16 @@ export type Config = {
   saveTrace?: boolean;
 
   /**
+   * Whether to save Playwright traces that include human user actions performed during browser sessions.
+   */
+  saveTraceWithUserActions?: boolean;
+
+  /**
+   * Whether to record human user actions during browser sessions (without necessarily generating traces).
+   */
+  recordUserActions?: boolean;
+
+  /**
    * The directory to save output files.
    */
   outputDir?: string;

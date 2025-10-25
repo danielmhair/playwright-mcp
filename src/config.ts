@@ -44,6 +44,8 @@ export type CLIOptions = {
   proxyServer?: string;
   saveSession?: boolean;
   saveTrace?: boolean;
+  saveTraceWithUserActions?: boolean;
+  recordUserActions?: boolean;
   storageState?: string;
   userAgent?: string;
   userDataDir?: string;
@@ -67,7 +69,7 @@ const defaultConfig: FullConfig = {
     blockedOrigins: undefined,
   },
   server: {},
-  outputDir: path.join(os.tmpdir(), 'playwright-mcp-output', sanitizeForFilePath(new Date().toISOString())),
+  outputDir: path.join(process.cwd(), 'playwright-mcp-output', sanitizeForFilePath(new Date().toISOString())),
 };
 
 type BrowserUserConfig = NonNullable<Config['browser']>;
@@ -96,7 +98,7 @@ export async function resolveCLIConfig(cliOptions: CLIOptions): Promise<FullConf
   result = mergeConfig(result, envOverrides);
   result = mergeConfig(result, cliOverrides);
   // Derive artifact output directory from config.outputDir
-  if (result.saveTrace)
+  if (result.saveTrace || result.saveTraceWithUserActions)
     result.browser.launchOptions.tracesDir = path.join(result.outputDir, 'traces');
   return result;
 }
@@ -192,6 +194,8 @@ export function configFromCLIOptions(cliOptions: CLIOptions): Config {
     },
     saveSession: cliOptions.saveSession,
     saveTrace: cliOptions.saveTrace,
+    saveTraceWithUserActions: cliOptions.saveTraceWithUserActions,
+    recordUserActions: cliOptions.recordUserActions,
     outputDir: cliOptions.outputDir,
     imageResponses: cliOptions.imageResponses,
   };
@@ -222,6 +226,8 @@ function configFromEnv(): Config {
   options.proxyBypass = envToString(process.env.PLAYWRIGHT_MCP_PROXY_BYPASS);
   options.proxyServer = envToString(process.env.PLAYWRIGHT_MCP_PROXY_SERVER);
   options.saveTrace = envToBoolean(process.env.PLAYWRIGHT_MCP_SAVE_TRACE);
+  options.saveTraceWithUserActions = envToBoolean(process.env.PLAYWRIGHT_MCP_SAVE_TRACE_WITH_USER_ACTIONS);
+  options.recordUserActions = envToBoolean(process.env.PLAYWRIGHT_MCP_RECORD_USER_ACTIONS);
   options.storageState = envToString(process.env.PLAYWRIGHT_MCP_STORAGE_STATE);
   options.userAgent = envToString(process.env.PLAYWRIGHT_MCP_USER_AGENT);
   options.userDataDir = envToString(process.env.PLAYWRIGHT_MCP_USER_DATA_DIR);

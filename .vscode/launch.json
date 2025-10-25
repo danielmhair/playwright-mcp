@@ -1,0 +1,52 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug MCP Server",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/cli.js",
+      "preLaunchTask": "build",
+      "args": ["--port", "3001", "--save-trace-with-user-actions", "--record-user-actions", "--save-session"],
+      "console": "integratedTerminal",
+      "env": {
+        "DEBUG": "pw:mcp:test",
+        "NODE_OPTIONS": "--enable-source-maps"
+      },
+      "sourceMaps": true,
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
+    },
+    {
+      "name": "Debug Browser Recording Test",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/test-browser-recording.js",
+      "console": "integratedTerminal",
+      "env": {
+        "DEBUG": "pw:mcp:*",
+        "NODE_OPTIONS": "--enable-source-maps"
+      },
+      "sourceMaps": true,
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
+    },
+    {
+      "name": "Debug Browser Recording Live Test",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/test-browser-recording-live.js",
+      "console": "integratedTerminal",
+      "env": {
+        "DEBUG": "pw:mcp:*",
+        "NODE_OPTIONS": "--enable-source-maps"
+      },
+      "sourceMaps": true,
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
+    }
+  ]
+}
